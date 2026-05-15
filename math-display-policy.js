@@ -64,29 +64,6 @@
     };
   }
 
-  function needsDisplayMeasurement(rawTex) {
-    const tex = typeof rawTex === "string" ? rawTex.trim() : "";
-
-    if (!tex || isForcedDisplayTex(tex)) {
-      return false;
-    }
-
-    const hasDisplayStructure = DISPLAY_STRUCTURE_PATTERN.test(tex);
-    const hasLargeObject = LARGE_OBJECT_PATTERN.test(tex);
-    const hasSetBuilder =
-      /(\\left\s*\{|\\\{|\{)/.test(tex) &&
-      /(\\mid\b|\\;?:|\\colon\b|\\text\{[^}]*\b(?:for|such|where|with|all|some)\b[^}]*\})/.test(tex);
-    const relationCount = countMatches(tex, RELATION_PATTERN);
-
-    return (
-      tex.length >= 72 ||
-      hasSetBuilder ||
-      hasDisplayStructure ||
-      hasLargeObject ||
-      relationCount >= 2
-    );
-  }
-
   function isForcedDisplayTex(tex) {
     return FORCED_DISPLAY_PATTERN.test(tex) || /\\tag\b/.test(tex) || /\\\\/.test(tex);
   }
@@ -105,8 +82,7 @@
 
   const api = {
     classifyDisplayMath,
-    isForcedDisplayTex,
-    needsDisplayMeasurement
+    isForcedDisplayTex
   };
 
   if (typeof module !== "undefined" && module.exports) {
