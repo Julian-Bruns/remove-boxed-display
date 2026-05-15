@@ -41,6 +41,8 @@
   "web_accessible_resources": [
     {
       "resources": [
+        "tex-normalizer.js",
+        "page-clipboard-hook.js",
         "vendor/katex/fonts/*"
       ],
       "matches": [

@@ -6,6 +6,7 @@
    *   enabled: boolean;
    *   removeBoxes: boolean;
    *   displayMathMode: "visual-inline" | "rerender-simple-inline";
+   *   displayMathModeExplicit: boolean;
    *   skipComplexDisplayMath: boolean;
    *   displayMathEnabled: boolean;
    * }} MathNormalizerSettings
@@ -15,7 +16,8 @@
   const DEFAULT_SETTINGS = {
     enabled: true,
     removeBoxes: true,
-    displayMathMode: "visual-inline",
+    displayMathMode: "rerender-simple-inline",
+    displayMathModeExplicit: false,
     skipComplexDisplayMath: false,
     displayMathEnabled: true
   };
@@ -50,10 +52,12 @@
   let observer = null;
   let pendingRoots = new Set();
   let debounceTimer = 0;
+  let nextFlowId = 1;
 
   init();
 
   function init() {
+    injectClipboardHook();
     bindRuntimeMessages();
     bindCopyNormalizer();
 
@@ -170,14 +174,16 @@
 
   function normalizeSettings(value) {
     const displayMathMode =
-      value.displayMathMode === "rerender-simple-inline"
-        ? "rerender-simple-inline"
-        : "visual-inline";
+      value.displayMathMode === "visual-inline" &&
+      value.displayMathModeExplicit === true
+        ? "visual-inline"
+        : "rerender-simple-inline";
 
     return {
       enabled: value.enabled !== false,
       removeBoxes: value.removeBoxes !== false,
       displayMathMode,
+      displayMathModeExplicit: value.displayMathModeExplicit === true,
       skipComplexDisplayMath: value.skipComplexDisplayMath === true,
       displayMathEnabled: value.displayMathEnabled !== false
     };
@@ -267,11 +273,17 @@
   }
 
   function processMathWrapper(mathNode) {
+    if (mathNode.closest("[data-cgmn-unboxed-render]")) {
+      return;
+    }
+
     if (!settings.enabled || !settings.removeBoxes) {
+      removeUnboxedRender(mathNode);
       restoreTexAnnotations(mathNode);
       return;
     }
 
+    renderUnboxedMath(mathNode);
     normalizeTexAnnotations(mathNode);
   }
 
@@ -307,9 +319,99 @@
     }
   }
 
+  function renderUnboxedMath(mathNode) {
+    if (!globalThis.katex || typeof globalThis.katex.render !== "function") {
+      return;
+    }
+
+    const rawTex = readMathTex(mathNode);
+    const normalizedTex = normalizeTexForCopy(rawTex);
+
+    if (!rawTex || normalizedTex === rawTex) {
+      removeUnboxedRender(mathNode);
+      return;
+    }
+
+    const sourceId = ensureUnboxedSourceId(mathNode);
+    const existing = document.querySelector(
+      `[data-cgmn-unboxed-for="${cssEscape(sourceId)}"]`
+    );
+
+    if (
+      existing &&
+      existing.dataset.cgmnRenderedTex === rawTex &&
+      existing.dataset.cgmnNormalizedTex === normalizedTex
+    ) {
+      mathNode.dataset.cgmnUnboxedOriginal = "true";
+      return;
+    }
+
+    removeUnboxedRender(mathNode);
+
+    const mount = document.createElement("span");
+    mount.dataset.cgmnUnboxedRender = "true";
+    mount.dataset.cgmnUnboxedFor = sourceId;
+    mount.dataset.cgmnRenderedTex = rawTex;
+    mount.dataset.cgmnNormalizedTex = normalizedTex;
+
+    try {
+      globalThis.katex.render(normalizedTex, mount, {
+        displayMode: false,
+        throwOnError: true,
+        strict: "ignore",
+        trust: false,
+        macros: SIMPLE_INLINE_MACROS
+      });
+    } catch (_error) {
+      mount.remove();
+      delete mathNode.dataset.cgmnUnboxedOriginal;
+      return;
+    }
+
+    mathNode.before(mount);
+    mathNode.dataset.cgmnUnboxedOriginal = "true";
+  }
+
+  function removeUnboxedRender(mathNode) {
+    const sourceId = mathNode.dataset.cgmnUnboxedSourceId;
+    if (sourceId) {
+      const selector = `[data-cgmn-unboxed-for="${cssEscape(sourceId)}"]`;
+      for (const node of document.querySelectorAll(selector)) {
+        node.remove();
+      }
+    }
+
+    delete mathNode.dataset.cgmnUnboxedSourceId;
+    delete mathNode.dataset.cgmnUnboxedOriginal;
+  }
+
+  function ensureUnboxedSourceId(mathNode) {
+    if (!mathNode.dataset.cgmnUnboxedSourceId) {
+      mathNode.dataset.cgmnUnboxedSourceId = `cgmn-box-${nextFlowId}`;
+      nextFlowId += 1;
+    }
+
+    return mathNode.dataset.cgmnUnboxedSourceId;
+  }
+
+  function readMathTex(mathNode) {
+    const annotation = mathNode.querySelector(
+      'annotation[encoding="application/x-tex"]'
+    );
+
+    return annotation
+      ? (
+          annotation.getAttribute("data-cgmn-original-tex") ||
+          annotation.textContent ||
+          ""
+        ).trim()
+      : "";
+  }
+
   function processDisplayMath(displayNode) {
     if (!settings.enabled || !settings.displayMathEnabled) {
       removeInlineRender(displayNode);
+      clearInlineFlow(displayNode);
       delete displayNode.dataset.cgmnComplex;
       return;
     }
@@ -320,6 +422,7 @@
     if (complex && settings.skipComplexDisplayMath) {
       displayNode.dataset.cgmnComplex = "true";
       removeInlineRender(displayNode);
+      clearInlineFlow(displayNode);
       return;
     }
 
@@ -327,11 +430,13 @@
 
     if (settings.displayMathMode !== "rerender-simple-inline") {
       removeInlineRender(displayNode);
+      clearInlineFlow(displayNode);
       return;
     }
 
     if (!rawTex || complex) {
       removeInlineRender(displayNode);
+      clearInlineFlow(displayNode);
       return;
     }
 
@@ -400,10 +505,12 @@
       existing.dataset.cgmnNormalizedTex === normalizedTex &&
       displayNode.dataset.cgmnRerendered === "true"
     ) {
+      applyInlineFlow(displayNode);
       return;
     }
 
     removeInlineRender(displayNode);
+    clearInlineFlow(displayNode);
 
     const mount = document.createElement("span");
     mount.dataset.cgmnInlineRender = "true";
@@ -427,6 +534,7 @@
 
     displayNode.prepend(mount);
     displayNode.dataset.cgmnRerendered = "true";
+    applyInlineFlow(displayNode);
   }
 
   function removeInlineRender(displayNode) {
@@ -439,6 +547,127 @@
     }
 
     delete displayNode.dataset.cgmnRerendered;
+  }
+
+  function applyInlineFlow(displayNode) {
+    clearInlineFlow(displayNode);
+
+    const ownerId = `cgmn-${nextFlowId}`;
+    nextFlowId += 1;
+    displayNode.dataset.cgmnFlowId = ownerId;
+    displayNode.dataset.cgmnInlineFlow = "true";
+    displayNode.dataset.cgmnFlowOwner = ownerId;
+
+    const flowBlock = getMathOnlyFlowBlock(displayNode) || displayNode;
+    markFlowElement(flowBlock, ownerId);
+
+    const previousBlock = getPreviousElementSibling(flowBlock);
+    const nextBlock = getNextElementSibling(flowBlock);
+
+    if (isMergeableTextBlock(previousBlock)) {
+      markFlowElement(previousBlock, ownerId);
+      previousBlock.dataset.cgmnFlowSpaceAfter = "true";
+    }
+
+    if (isMergeableTextBlock(nextBlock)) {
+      markFlowElement(nextBlock, ownerId);
+    }
+  }
+
+  function clearInlineFlow(displayNode) {
+    const ownerId = displayNode.dataset.cgmnFlowId;
+    if (!ownerId) {
+      delete displayNode.dataset.cgmnInlineFlow;
+      delete displayNode.dataset.cgmnFlowOwner;
+      return;
+    }
+
+    const ownerSelector = `[data-cgmn-flow-owner="${cssEscape(ownerId)}"]`;
+    for (const node of document.querySelectorAll(ownerSelector)) {
+      delete node.dataset.cgmnInlineFlow;
+      delete node.dataset.cgmnInlineFlowBlock;
+      delete node.dataset.cgmnFlowOwner;
+      delete node.dataset.cgmnFlowSpaceAfter;
+    }
+
+    delete displayNode.dataset.cgmnFlowId;
+  }
+
+  function markFlowElement(element, ownerId) {
+    element.dataset.cgmnInlineFlowBlock = "true";
+    element.dataset.cgmnFlowOwner = ownerId;
+  }
+
+  function getMathOnlyFlowBlock(displayNode) {
+    const parent = displayNode.parentElement;
+    if (!parent || !["P", "DIV", "LI"].includes(parent.tagName)) {
+      return null;
+    }
+
+    if (parent.matches(SKIP_SELECTOR)) {
+      return null;
+    }
+
+    for (const child of parent.childNodes) {
+      if (child === displayNode) {
+        continue;
+      }
+
+      if (child.nodeType === Node.TEXT_NODE && child.textContent.trim() === "") {
+        continue;
+      }
+
+      return null;
+    }
+
+    return parent;
+  }
+
+  function getPreviousElementSibling(element) {
+    let sibling = element.previousElementSibling;
+    while (sibling && isIgnorableFlowSibling(sibling)) {
+      sibling = sibling.previousElementSibling;
+    }
+    return sibling;
+  }
+
+  function getNextElementSibling(element) {
+    let sibling = element.nextElementSibling;
+    while (sibling && isIgnorableFlowSibling(sibling)) {
+      sibling = sibling.nextElementSibling;
+    }
+    return sibling;
+  }
+
+  function isIgnorableFlowSibling(element) {
+    return element.matches("script, style") || element.hidden;
+  }
+
+  function isMergeableTextBlock(element) {
+    if (!element || !["P", "DIV", "LI"].includes(element.tagName)) {
+      return false;
+    }
+
+    if (isSkipped(element)) {
+      return false;
+    }
+
+    const text = element.textContent.trim();
+    if (!text || text.length > 240) {
+      return false;
+    }
+
+    return !element.querySelector(
+      "pre, code, table, ul, ol, blockquote, h1, h2, h3, h4, h5, h6, .katex-display[data-cgmn-complex='true']"
+    );
+  }
+
+  function cssEscape(value) {
+    if (globalThis.CSS && typeof globalThis.CSS.escape === "function") {
+      return globalThis.CSS.escape(value);
+    }
+
+    return value.replace(/["\\]/g, "\\$&");
   }
 
   function isSkipped(element) {
@@ -477,6 +706,34 @@
     );
   }
 
+  function injectClipboardHook() {
+    if (!extensionApi || typeof extensionApi.runtimeGetURL !== "function") {
+      return;
+    }
+
+    injectPageScript("tex-normalizer.js", () => {
+      injectPageScript("page-clipboard-hook.js");
+    });
+  }
+
+  function injectPageScript(path, onLoad) {
+    const url = extensionApi.runtimeGetURL(path);
+    if (!url || !document.documentElement) {
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = url;
+    script.onload = () => {
+      script.remove();
+      if (onLoad) {
+        onLoad();
+      }
+    };
+    script.onerror = () => script.remove();
+    document.documentElement.append(script);
+  }
+
   function getSelectionElement(selection) {
     const node = selection.anchorNode || selection.focusNode;
     if (!node) {
@@ -491,6 +748,7 @@
       settings.enabled,
       settings.removeBoxes,
       settings.displayMathMode,
+      settings.displayMathModeExplicit,
       settings.skipComplexDisplayMath,
       settings.displayMathEnabled
     ].join("|");

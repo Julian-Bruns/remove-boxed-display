@@ -28,10 +28,26 @@ html[data-cgmn-enabled="true"][data-cgmn-display-inline="true"]
   display: none !important;
 }
 
+html[data-cgmn-enabled="true"][data-cgmn-display-inline="true"]
+  [data-cgmn-inline-flow-block="true"] {
+  display: inline !important;
+  margin-block: 0 !important;
+}
+
+html[data-cgmn-enabled="true"][data-cgmn-display-inline="true"]
+  [data-cgmn-flow-space-after="true"]::after {
+  content: " ";
+  white-space: pre;
+}
+
 html[data-cgmn-remove-boxes="true"] .katex .fbox,
 html[data-cgmn-remove-boxes="true"] .katex .fcolorbox {
   border: 0 !important;
   box-shadow: none !important;
+}
+
+html[data-cgmn-remove-boxes="true"] .katex[data-cgmn-unboxed-original="true"] {
+  display: none !important;
 }
 
 html[data-cgmn-remove-boxes="true"] .katex[data-cgmn-unboxed="true"] .fbox,

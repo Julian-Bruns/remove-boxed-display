@@ -4,7 +4,8 @@
   const DEFAULT_SETTINGS = {
     enabled: true,
     removeBoxes: true,
-    displayMathMode: "visual-inline",
+    displayMathMode: "rerender-simple-inline",
+    displayMathModeExplicit: false,
     skipComplexDisplayMath: false,
     displayMathEnabled: true
   };
@@ -48,7 +49,11 @@
 
         const value = control.type === "checkbox" ? control.checked : control.value;
         if (extensionApi) {
-          extensionApi.storageSet({ [key]: value });
+          const update = { [key]: value };
+          if (key === "displayMathMode") {
+            update.displayMathModeExplicit = true;
+          }
+          extensionApi.storageSet(update);
         }
       });
     }
@@ -118,9 +123,11 @@
       enabled: value.enabled !== false,
       removeBoxes: value.removeBoxes !== false,
       displayMathMode:
-        value.displayMathMode === "rerender-simple-inline"
-          ? "rerender-simple-inline"
-          : "visual-inline",
+        value.displayMathMode === "visual-inline" &&
+        value.displayMathModeExplicit === true
+          ? "visual-inline"
+          : "rerender-simple-inline",
+      displayMathModeExplicit: value.displayMathModeExplicit === true,
       skipComplexDisplayMath: value.skipComplexDisplayMath === true,
       displayMathEnabled: value.displayMathEnabled !== false
     };

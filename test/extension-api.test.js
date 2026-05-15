@@ -39,6 +39,7 @@ async function testPromiseApi() {
         })
       },
       runtime: {
+        getURL: (path) => `moz-extension://id/${path}`,
         onMessage: {
           addListener: (listener) => messages.push(listener)
         }
@@ -55,6 +56,7 @@ async function testPromiseApi() {
   });
   api.onRuntimeMessage(() => false);
   assert.equal(messages.length, 1);
+  assert.equal(api.runtimeGetURL("hook.js"), "moz-extension://id/hook.js");
 }
 
 async function testCallbackApi() {

@@ -126,6 +126,17 @@
     runtimeApi.onMessage.addListener(listener);
   }
 
+  function runtimeGetURL(path) {
+    const runtimeApi =
+      (promiseApi && promiseApi.runtime) || (callbackApi && callbackApi.runtime);
+
+    if (!runtimeApi || typeof runtimeApi.getURL !== "function") {
+      return "";
+    }
+
+    return runtimeApi.getURL(path);
+  }
+
   function getLastError() {
     return callbackApi && callbackApi.runtime
       ? callbackApi.runtime.lastError
@@ -138,7 +149,8 @@
     onStorageChanged,
     tabsQuery,
     tabsSendMessage,
-    onRuntimeMessage
+    onRuntimeMessage,
+    runtimeGetURL
   };
 
   if (typeof module !== "undefined" && module.exports) {
