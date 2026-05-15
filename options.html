@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ChatGPT Math Normalizer Options</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body class="options-page">
+    <main class="panel">
+      <header class="header">
+        <div>
+          <h1>Math Normalizer</h1>
+          <p id="status" class="status">Options page</p>
+        </div>
+      </header>
+
+      <label class="row">
+        <span>
+          <strong>Enable extension</strong>
+          <small>Apply changes on supported ChatGPT pages.</small>
+        </span>
+        <input id="enabled" type="checkbox" role="switch">
+      </label>
+
+      <label class="row">
+        <span>
+          <strong>Remove boxed math</strong>
+          <small>Hide fbox/fcolorbox borders and boxed padding.</small>
+        </span>
+        <input id="removeBoxes" type="checkbox" role="switch">
+      </label>
+
+      <label class="row">
+        <span>
+          <strong>Convert display math</strong>
+          <small>Flow display equations inline with surrounding text.</small>
+        </span>
+        <input id="displayMathEnabled" type="checkbox" role="switch">
+      </label>
+
+      <label class="field">
+        <span>Advanced mode</span>
+        <select id="displayMathMode">
+          <option value="visual-inline">Visual inline</option>
+          <option value="rerender-simple-inline">True inline for simple formulas</option>
+        </select>
+      </label>
+
+      <label class="row">
+        <span>
+          <strong>Skip complex display math</strong>
+          <small>Leave wide or multi-line equations untouched.</small>
+        </span>
+        <input id="skipComplexDisplayMath" type="checkbox" role="switch">
+      </label>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

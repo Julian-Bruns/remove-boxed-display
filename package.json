@@ -1,0 +1,13 @@
+{
+  "name": "chatgpt-math-normalizer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal Chrome extension that normalizes ChatGPT KaTeX display math and boxed math.",
+  "scripts": {
+    "check": "node --check tex-normalizer.js && node --check content.js && node --check popup.js && node test/normalize-tex.test.js",
+    "vendor:katex": "mkdir -p vendor/katex && cp node_modules/katex/dist/katex.min.js vendor/katex/katex.min.js && cp node_modules/katex/dist/katex.min.css vendor/katex/katex.min.css && rm -rf vendor/katex/fonts && cp -R node_modules/katex/dist/fonts vendor/katex/fonts && cp node_modules/katex/LICENSE vendor/katex/LICENSE"
+  },
+  "dependencies": {
+    "katex": "^0.16.22"
+  }
+}
