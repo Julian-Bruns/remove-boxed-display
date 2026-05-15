@@ -26,8 +26,6 @@
 
   const CANDIDATE_SELECTOR = ".katex-display, .fbox, .fcolorbox";
   const BOX_SELECTOR = ".fbox, .fcolorbox";
-  const IDLE_BATCH_BUDGET_MS = 8;
-  const IDLE_BATCH_SIZE = 8;
   const WIDTH_CACHE_LIMIT = 300;
   const SKIP_SELECTOR = [
     "pre",
@@ -65,11 +63,8 @@
   /** @type {MathNormalizerSettings} */
   let settings = { ...DEFAULT_SETTINGS };
   let observer = null;
-  let visibilityObserver = null;
   let pendingRoots = new Set();
-  let pendingCandidates = new Set();
   let debounceTimer = 0;
-  let idleTimer = 0;
   let nextFlowId = 1;
   const inlineRenderByDisplay = new WeakMap();
   const inlineFlowNodesByDisplay = new WeakMap();
@@ -86,7 +81,6 @@
     loadSettings().then((loaded) => {
       settings = normalizeSettings(loaded);
       applyDocumentFlags();
-      setupVisibilityObserver();
       processRoot(document.body || document.documentElement, false);
       startObserverWhenReady();
       bindStorageChanges();
@@ -121,30 +115,6 @@
       childList: true,
       subtree: true
     });
-  }
-
-  function setupVisibilityObserver() {
-    if (visibilityObserver || typeof IntersectionObserver !== "function") {
-      return;
-    }
-
-    visibilityObserver = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) {
-            continue;
-          }
-
-          visibilityObserver.unobserve(entry.target);
-          queueCandidateForIdleProcessing(entry.target);
-        }
-      },
-      {
-        root: null,
-        rootMargin: "1000px 0px",
-        threshold: 0
-      }
-    );
   }
 
   function bindStorageChanges() {
@@ -291,96 +261,14 @@
       processBox(candidate);
       const mathWrapper = candidate.closest(".katex");
       if (mathWrapper) {
-        deferCandidate(mathWrapper, force);
+        processCandidateNow(mathWrapper, force);
       }
       return;
     }
 
     if (candidate.matches(".katex-display")) {
-      deferCandidate(candidate, force);
-    }
-  }
-
-  function deferCandidate(candidate, force) {
-    if (!(candidate instanceof Element)) {
-      return;
-    }
-
-    if (force || !visibilityObserver) {
-      queueCandidateForIdleProcessing(candidate, force);
-      return;
-    }
-
-    visibilityObserver.observe(candidate);
-  }
-
-  function queueCandidateForIdleProcessing(candidate, force) {
-    if (!(candidate instanceof Element)) {
-      return;
-    }
-
-    if (force) {
-      candidate.dataset.cgmnForceProcess = "true";
-    }
-
-    pendingCandidates.add(candidate);
-    scheduleIdleProcessing();
-  }
-
-  function scheduleIdleProcessing() {
-    if (idleTimer) {
-      return;
-    }
-
-    const requestIdle = globalThis.requestIdleCallback || ((callback) => setTimeout(callback, 80));
-    idleTimer = requestIdle(processIdleCandidates, { timeout: 500 });
-  }
-
-  function processIdleCandidates(deadline) {
-    idleTimer = 0;
-
-    const started = performance.now();
-    let handled = 0;
-
-    for (const candidate of pendingCandidates) {
-      pendingCandidates.delete(candidate);
-      handled += 1;
-
-      if (!candidate.isConnected || isSkipped(candidate)) {
-        if (shouldYieldIdleBatch(handled, started, deadline)) {
-          break;
-        }
-        continue;
-      }
-
-      const force = candidate.dataset.cgmnForceProcess === "true";
-      delete candidate.dataset.cgmnForceProcess;
-      if (!force && visibilityObserver && !isNearViewport(candidate)) {
-        visibilityObserver.observe(candidate);
-        if (shouldYieldIdleBatch(handled, started, deadline)) {
-          break;
-        }
-        continue;
-      }
-
       processCandidateNow(candidate, force);
-      if (shouldYieldIdleBatch(handled, started, deadline)) {
-        break;
-      }
     }
-
-    if (pendingCandidates.size > 0) {
-      scheduleIdleProcessing();
-    }
-  }
-
-  function shouldYieldIdleBatch(handled, started, deadline) {
-    const timedOut =
-      deadline && typeof deadline.timeRemaining === "function"
-        ? deadline.timeRemaining() <= 1
-        : performance.now() - started >= IDLE_BATCH_BUDGET_MS;
-
-    return handled >= IDLE_BATCH_SIZE || timedOut;
   }
 
   function processCandidateNow(candidate, force) {
@@ -625,22 +513,6 @@
     );
 
     return container ? container.getBoundingClientRect().width : 0;
-  }
-
-  function isNearViewport(element) {
-    const rect = element.getBoundingClientRect();
-    const margin = 1000;
-    const viewportHeight =
-      globalThis.innerHeight || document.documentElement.clientHeight || 0;
-    const viewportWidth =
-      globalThis.innerWidth || document.documentElement.clientWidth || 0;
-
-    return (
-      rect.bottom >= -margin &&
-      rect.top <= viewportHeight + margin &&
-      rect.right >= -margin &&
-      rect.left <= viewportWidth + margin
-    );
   }
 
   function measureInlineFormulaWidth(rawTex) {
