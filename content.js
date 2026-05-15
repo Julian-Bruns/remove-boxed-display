@@ -8,6 +8,7 @@
    *   displayMathMode: "visual-inline" | "rerender-simple-inline";
    *   displayMathModeExplicit: boolean;
    *   skipComplexDisplayMath: boolean;
+   *   skipComplexDisplayMathExplicit: boolean;
    *   displayMathEnabled: boolean;
    * }} MathNormalizerSettings
    */
@@ -18,7 +19,8 @@
     removeBoxes: true,
     displayMathMode: "rerender-simple-inline",
     displayMathModeExplicit: false,
-    skipComplexDisplayMath: false,
+    skipComplexDisplayMath: true,
+    skipComplexDisplayMathExplicit: false,
     displayMathEnabled: true
   };
 
@@ -46,6 +48,11 @@
       ? globalThis.cgmnTexNormalizer.normalizeTexForCopy
       : (tex) => tex;
   const extensionApi = globalThis.cgmnExtensionApi;
+  const classifyDisplayMath =
+    globalThis.cgmnDisplayPolicy &&
+    typeof globalThis.cgmnDisplayPolicy.classifyDisplayMath === "function"
+      ? globalThis.cgmnDisplayPolicy.classifyDisplayMath
+      : () => ({ preserve: false, reason: "policy-unavailable" });
 
   /** @type {MathNormalizerSettings} */
   let settings = { ...DEFAULT_SETTINGS };
@@ -184,7 +191,12 @@
       removeBoxes: value.removeBoxes !== false,
       displayMathMode,
       displayMathModeExplicit: value.displayMathModeExplicit === true,
-      skipComplexDisplayMath: value.skipComplexDisplayMath === true,
+      skipComplexDisplayMath:
+        value.skipComplexDisplayMathExplicit === true
+          ? value.skipComplexDisplayMath === true
+          : true,
+      skipComplexDisplayMathExplicit:
+        value.skipComplexDisplayMathExplicit === true,
       displayMathEnabled: value.displayMathEnabled !== false
     };
   }
@@ -417,16 +429,21 @@
     }
 
     const rawTex = readTex(displayNode);
-    const complex = isComplexFormula(rawTex) || widthExceedsContainer(displayNode);
+    const displayPolicy = classifyDisplayMath(rawTex, getDisplayMetrics(displayNode, rawTex));
+    const preserveDisplay =
+      displayPolicy.reason === "forced-display-construct" ||
+      (settings.skipComplexDisplayMath && displayPolicy.preserve);
 
-    if (complex && settings.skipComplexDisplayMath) {
+    if (preserveDisplay) {
       displayNode.dataset.cgmnComplex = "true";
+      displayNode.dataset.cgmnDisplayReason = displayPolicy.reason;
       removeInlineRender(displayNode);
       clearInlineFlow(displayNode);
       return;
     }
 
     delete displayNode.dataset.cgmnComplex;
+    delete displayNode.dataset.cgmnDisplayReason;
 
     if (settings.displayMathMode !== "rerender-simple-inline") {
       removeInlineRender(displayNode);
@@ -434,7 +451,7 @@
       return;
     }
 
-    if (!rawTex || complex) {
+    if (!rawTex) {
       removeInlineRender(displayNode);
       clearInlineFlow(displayNode);
       return;
@@ -456,36 +473,51 @@
       : "";
   }
 
-  function isComplexFormula(rawTex) {
-    if (!rawTex) {
-      return false;
-    }
-
-    if (rawTex.length > 180) {
-      return true;
-    }
-
-    return /\\begin\{(?:align|aligned|matrix|cases)/.test(rawTex)
-      || /\\tag\b/.test(rawTex)
-      || /\\\\/.test(rawTex);
+  function getDisplayMetrics(displayNode, rawTex) {
+    return {
+      containerWidth: getMessageContainerWidth(displayNode),
+      inlineWidth: measureInlineFormulaWidth(rawTex)
+    };
   }
 
-  function widthExceedsContainer(displayNode) {
-    const formulaWidth = Math.max(displayNode.scrollWidth, displayNode.getBoundingClientRect().width);
+  function getMessageContainerWidth(displayNode) {
     const container = displayNode.closest(
       "[data-message-author-role], article, main"
     );
 
-    if (!container) {
-      return false;
+    return container ? container.getBoundingClientRect().width : 0;
+  }
+
+  function measureInlineFormulaWidth(rawTex) {
+    if (!rawTex || !globalThis.katex || typeof globalThis.katex.render !== "function") {
+      return 0;
     }
 
-    const containerWidth = container.getBoundingClientRect().width;
-    if (!containerWidth || !formulaWidth) {
-      return false;
-    }
+    const mount = document.createElement("span");
+    mount.style.cssText = [
+      "position:absolute",
+      "visibility:hidden",
+      "white-space:nowrap",
+      "contain:layout style paint",
+      "left:-10000px",
+      "top:0"
+    ].join(";");
 
-    return formulaWidth > containerWidth * 1.15 && formulaWidth - containerWidth > 48;
+    try {
+      globalThis.katex.render(normalizeTexForCopy(rawTex), mount, {
+        displayMode: false,
+        throwOnError: true,
+        strict: "ignore",
+        trust: false,
+        macros: settings.enabled && settings.removeBoxes ? SIMPLE_INLINE_MACROS : undefined
+      });
+      document.documentElement.append(mount);
+      return mount.getBoundingClientRect().width;
+    } catch (_error) {
+      return 0;
+    } finally {
+      mount.remove();
+    }
   }
 
   function renderSimpleInline(displayNode, rawTex) {
@@ -750,6 +782,7 @@
       settings.displayMathMode,
       settings.displayMathModeExplicit,
       settings.skipComplexDisplayMath,
+      settings.skipComplexDisplayMathExplicit,
       settings.displayMathEnabled
     ].join("|");
   }

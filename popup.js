@@ -6,7 +6,8 @@
     removeBoxes: true,
     displayMathMode: "rerender-simple-inline",
     displayMathModeExplicit: false,
-    skipComplexDisplayMath: false,
+    skipComplexDisplayMath: true,
+    skipComplexDisplayMathExplicit: false,
     displayMathEnabled: true
   };
   const extensionApi = globalThis.cgmnExtensionApi;
@@ -52,6 +53,8 @@
           const update = { [key]: value };
           if (key === "displayMathMode") {
             update.displayMathModeExplicit = true;
+          } else if (key === "skipComplexDisplayMath") {
+            update.skipComplexDisplayMathExplicit = true;
           }
           extensionApi.storageSet(update);
         }
@@ -128,7 +131,12 @@
           ? "visual-inline"
           : "rerender-simple-inline",
       displayMathModeExplicit: value.displayMathModeExplicit === true,
-      skipComplexDisplayMath: value.skipComplexDisplayMath === true,
+      skipComplexDisplayMath:
+        value.skipComplexDisplayMathExplicit === true
+          ? value.skipComplexDisplayMath === true
+          : true,
+      skipComplexDisplayMathExplicit:
+        value.skipComplexDisplayMathExplicit === true,
       displayMathEnabled: value.displayMathEnabled !== false
     };
   }

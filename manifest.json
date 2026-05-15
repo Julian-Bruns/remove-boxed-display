@@ -33,6 +33,7 @@
         "extension-api.js",
         "vendor/katex/katex.min.js",
         "tex-normalizer.js",
+        "math-display-policy.js",
         "content.js"
       ],
       "run_at": "document_idle"
