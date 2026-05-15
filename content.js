@@ -63,6 +63,8 @@
   /** @type {MathNormalizerSettings} */
   let settings = { ...DEFAULT_SETTINGS };
   let observer = null;
+  let pendingRoots = new Set();
+  let debounceTimer = 0;
   let nextFlowId = 1;
   const inlineRenderByDisplay = new WeakMap();
   const inlineFlowNodesByDisplay = new WeakMap();
@@ -72,27 +74,22 @@
   init();
 
   function init() {
-    injectPageHooks();
+    injectClipboardHook();
     bindRuntimeMessages();
     bindCopyNormalizer();
-    applyDocumentFlags();
-    startObserverWhenReady();
-    processRoot(document.documentElement, false);
-    bindStorageChanges();
 
     loadSettings().then((loaded) => {
-      const previousSettingsKey = getSettingsKey();
       settings = normalizeSettings(loaded);
       applyDocumentFlags();
-      processRoot(document.documentElement, getSettingsKey() !== previousSettingsKey);
+      processRoot(document.body || document.documentElement, true);
+      startObserverWhenReady();
+      bindStorageChanges();
     });
   }
 
   function startObserverWhenReady() {
-    const root = document.documentElement;
-
-    if (observer || !root) {
-      if (!root) {
+    if (observer || !document.body) {
+      if (!document.body) {
         setTimeout(startObserverWhenReady, 100);
       }
       return;
@@ -105,17 +102,16 @@
         }
 
         for (const node of mutation.addedNodes) {
-          if (
-            node.nodeType === Node.ELEMENT_NODE &&
-            nodeContainsCandidate(node)
-          ) {
-            processRoot(node, false);
+          if (node.nodeType === Node.ELEMENT_NODE && nodeContainsCandidate(node)) {
+            pendingRoots.add(node);
           }
         }
       }
+
+      scheduleProcessing();
     });
 
-    observer.observe(root, {
+    observer.observe(document.body, {
       childList: true,
       subtree: true
     });
@@ -167,6 +163,22 @@
       });
       return false;
     });
+  }
+
+  function scheduleProcessing() {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+    }
+
+    debounceTimer = setTimeout(() => {
+      debounceTimer = 0;
+      const roots = pendingRoots;
+      pendingRoots = new Set();
+
+      for (const root of roots) {
+        processRoot(root, false);
+      }
+    }, 120);
   }
 
   async function loadSettings() {
@@ -223,13 +235,24 @@
     }
 
     const candidates = collectCandidates(root);
+    const settingsKey = getSettingsKey();
 
     for (const candidate of candidates) {
       if (isSkipped(candidate)) {
         continue;
       }
 
-      routeCandidate(candidate, force);
+      if (
+        !force &&
+        candidate.dataset.cgmnProcessed === "true" &&
+        candidate.dataset.cgmnSettingsKey === settingsKey
+      ) {
+        continue;
+      }
+
+      processCandidate(candidate);
+      candidate.dataset.cgmnProcessed = "true";
+      candidate.dataset.cgmnSettingsKey = settingsKey;
     }
   }
 
@@ -244,39 +267,18 @@
     return candidates;
   }
 
-  function routeCandidate(candidate, force) {
+  function processCandidate(candidate) {
+    if (candidate.matches(".katex")) {
+      processMathWrapper(candidate);
+    }
+
     if (candidate.matches(BOX_SELECTOR)) {
       processBox(candidate);
-      const mathWrapper = candidate.closest(".katex");
-      if (mathWrapper) {
-        processCandidateNow(mathWrapper, force);
-      }
-      return;
     }
 
     if (candidate.matches(".katex-display")) {
-      processCandidateNow(candidate, force);
-    }
-  }
-
-  function processCandidateNow(candidate, force) {
-    const settingsKey = getSettingsKey();
-    if (
-      !force &&
-      candidate.dataset.cgmnProcessed === "true" &&
-      candidate.dataset.cgmnSettingsKey === settingsKey
-    ) {
-      return;
-    }
-
-    if (candidate.matches(".katex")) {
-      processMathWrapper(candidate);
-    } else if (candidate.matches(".katex-display")) {
       processDisplayMath(candidate);
     }
-
-    candidate.dataset.cgmnProcessed = "true";
-    candidate.dataset.cgmnSettingsKey = settingsKey;
   }
 
   function processBox(boxNode) {
@@ -395,10 +397,18 @@
   }
 
   function removeUnboxedRender(mathNode) {
+    const sourceId = mathNode.dataset.cgmnUnboxedSourceId;
     const existing = unboxedRenderBySource.get(mathNode);
     if (existing) {
       existing.remove();
       unboxedRenderBySource.delete(mathNode);
+    }
+
+    if (sourceId) {
+      const selector = `[data-cgmn-unboxed-for="${cssEscape(sourceId)}"]`;
+      for (const node of document.querySelectorAll(selector)) {
+        node.remove();
+      }
     }
 
     delete mathNode.dataset.cgmnUnboxedSourceId;
@@ -542,6 +552,15 @@
     }
   }
 
+  function setCachedWidth(tex, width) {
+    if (widthByTex.size >= WIDTH_CACHE_LIMIT) {
+      const oldestKey = widthByTex.keys().next().value;
+      widthByTex.delete(oldestKey);
+    }
+
+    widthByTex.set(tex, width);
+  }
+
   function renderSimpleInline(displayNode, rawTex) {
     if (!globalThis.katex || typeof globalThis.katex.render !== "function") {
       removeInlineRender(displayNode);
@@ -600,9 +619,12 @@
       inlineRenderByDisplay.delete(displayNode);
     }
 
-    const fallback = displayNode.querySelector(":scope > [data-cgmn-inline-render]");
-    if (fallback) {
-      fallback.remove();
+    const renderedNodes = displayNode.querySelectorAll(
+      ":scope > [data-cgmn-inline-render]"
+    );
+
+    for (const node of renderedNodes) {
+      node.remove();
     }
 
     delete displayNode.dataset.cgmnRerendered;
@@ -640,20 +662,34 @@
 
   function clearInlineFlow(displayNode) {
     const flowNodes = inlineFlowNodesByDisplay.get(displayNode);
-    if (!flowNodes) {
+    if (flowNodes) {
+      for (const node of flowNodes) {
+        delete node.dataset.cgmnInlineFlow;
+        delete node.dataset.cgmnInlineFlowBlock;
+        delete node.dataset.cgmnFlowOwner;
+        delete node.dataset.cgmnFlowSpaceAfter;
+      }
+
+      inlineFlowNodesByDisplay.delete(displayNode);
+      delete displayNode.dataset.cgmnFlowId;
+      return;
+    }
+
+    const ownerId = displayNode.dataset.cgmnFlowId;
+    if (!ownerId) {
       delete displayNode.dataset.cgmnInlineFlow;
       delete displayNode.dataset.cgmnFlowOwner;
       return;
     }
 
-    for (const node of flowNodes) {
+    const ownerSelector = `[data-cgmn-flow-owner="${cssEscape(ownerId)}"]`;
+    for (const node of document.querySelectorAll(ownerSelector)) {
       delete node.dataset.cgmnInlineFlow;
       delete node.dataset.cgmnInlineFlowBlock;
       delete node.dataset.cgmnFlowOwner;
       delete node.dataset.cgmnFlowSpaceAfter;
     }
 
-    inlineFlowNodesByDisplay.delete(displayNode);
     delete displayNode.dataset.cgmnFlowId;
   }
 
@@ -726,13 +762,12 @@
     );
   }
 
-  function setCachedWidth(tex, width) {
-    if (widthByTex.size >= WIDTH_CACHE_LIMIT) {
-      const oldestKey = widthByTex.keys().next().value;
-      widthByTex.delete(oldestKey);
+  function cssEscape(value) {
+    if (globalThis.CSS && typeof globalThis.CSS.escape === "function") {
+      return globalThis.CSS.escape(value);
     }
 
-    widthByTex.set(tex, width);
+    return value.replace(/["\\]/g, "\\$&");
   }
 
   function isSkipped(element) {
@@ -771,22 +806,13 @@
     );
   }
 
-  function injectPageHooks() {
+  function injectClipboardHook() {
     if (!extensionApi || typeof extensionApi.runtimeGetURL !== "function") {
       return;
     }
 
-    if (!document.documentElement) {
-      setTimeout(injectPageHooks, 0);
-      return;
-    }
-
     injectPageScript("tex-normalizer.js", () => {
-      injectPageScript("math-display-policy.js", () => {
-        injectPageScript("page-katex-hook.js", () => {
-          injectPageScript("page-clipboard-hook.js");
-        });
-      });
+      injectPageScript("page-clipboard-hook.js");
     });
   }
 
@@ -797,7 +823,6 @@
     }
 
     const script = document.createElement("script");
-    script.async = false;
     script.src = url;
     script.onload = () => {
       script.remove();
