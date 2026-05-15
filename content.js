@@ -24,8 +24,11 @@
     displayMathEnabled: true
   };
 
-  const CANDIDATE_SELECTOR = ".katex, .katex-display, .fbox, .fcolorbox";
+  const CANDIDATE_SELECTOR = ".katex-display, .fbox, .fcolorbox";
   const BOX_SELECTOR = ".fbox, .fcolorbox";
+  const IDLE_BATCH_BUDGET_MS = 8;
+  const IDLE_BATCH_SIZE = 8;
+  const WIDTH_CACHE_LIMIT = 300;
   const SKIP_SELECTOR = [
     "pre",
     "code",
@@ -53,13 +56,25 @@
     typeof globalThis.cgmnDisplayPolicy.classifyDisplayMath === "function"
       ? globalThis.cgmnDisplayPolicy.classifyDisplayMath
       : () => ({ preserve: false, reason: "policy-unavailable" });
+  const needsDisplayMeasurement =
+    globalThis.cgmnDisplayPolicy &&
+    typeof globalThis.cgmnDisplayPolicy.needsDisplayMeasurement === "function"
+      ? globalThis.cgmnDisplayPolicy.needsDisplayMeasurement
+      : () => true;
 
   /** @type {MathNormalizerSettings} */
   let settings = { ...DEFAULT_SETTINGS };
   let observer = null;
+  let visibilityObserver = null;
   let pendingRoots = new Set();
+  let pendingCandidates = new Set();
   let debounceTimer = 0;
+  let idleTimer = 0;
   let nextFlowId = 1;
+  const inlineRenderByDisplay = new WeakMap();
+  const inlineFlowNodesByDisplay = new WeakMap();
+  const unboxedRenderBySource = new WeakMap();
+  const widthByTex = new Map();
 
   init();
 
@@ -71,7 +86,8 @@
     loadSettings().then((loaded) => {
       settings = normalizeSettings(loaded);
       applyDocumentFlags();
-      processRoot(document.body || document.documentElement, true);
+      setupVisibilityObserver();
+      processRoot(document.body || document.documentElement, false);
       startObserverWhenReady();
       bindStorageChanges();
     });
@@ -105,6 +121,30 @@
       childList: true,
       subtree: true
     });
+  }
+
+  function setupVisibilityObserver() {
+    if (visibilityObserver || typeof IntersectionObserver !== "function") {
+      return;
+    }
+
+    visibilityObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) {
+            continue;
+          }
+
+          visibilityObserver.unobserve(entry.target);
+          queueCandidateForIdleProcessing(entry.target);
+        }
+      },
+      {
+        root: null,
+        rootMargin: "1000px 0px",
+        threshold: 0
+      }
+    );
   }
 
   function bindStorageChanges() {
@@ -225,24 +265,13 @@
     }
 
     const candidates = collectCandidates(root);
-    const settingsKey = getSettingsKey();
 
     for (const candidate of candidates) {
       if (isSkipped(candidate)) {
         continue;
       }
 
-      if (
-        !force &&
-        candidate.dataset.cgmnProcessed === "true" &&
-        candidate.dataset.cgmnSettingsKey === settingsKey
-      ) {
-        continue;
-      }
-
-      processCandidate(candidate);
-      candidate.dataset.cgmnProcessed = "true";
-      candidate.dataset.cgmnSettingsKey = settingsKey;
+      routeCandidate(candidate, force);
     }
   }
 
@@ -257,18 +286,121 @@
     return candidates;
   }
 
-  function processCandidate(candidate) {
-    if (candidate.matches(".katex")) {
-      processMathWrapper(candidate);
-    }
-
+  function routeCandidate(candidate, force) {
     if (candidate.matches(BOX_SELECTOR)) {
       processBox(candidate);
+      const mathWrapper = candidate.closest(".katex");
+      if (mathWrapper) {
+        deferCandidate(mathWrapper, force);
+      }
+      return;
     }
 
     if (candidate.matches(".katex-display")) {
+      deferCandidate(candidate, force);
+    }
+  }
+
+  function deferCandidate(candidate, force) {
+    if (!(candidate instanceof Element)) {
+      return;
+    }
+
+    if (force || !visibilityObserver) {
+      queueCandidateForIdleProcessing(candidate, force);
+      return;
+    }
+
+    visibilityObserver.observe(candidate);
+  }
+
+  function queueCandidateForIdleProcessing(candidate, force) {
+    if (!(candidate instanceof Element)) {
+      return;
+    }
+
+    if (force) {
+      candidate.dataset.cgmnForceProcess = "true";
+    }
+
+    pendingCandidates.add(candidate);
+    scheduleIdleProcessing();
+  }
+
+  function scheduleIdleProcessing() {
+    if (idleTimer) {
+      return;
+    }
+
+    const requestIdle = globalThis.requestIdleCallback || ((callback) => setTimeout(callback, 80));
+    idleTimer = requestIdle(processIdleCandidates, { timeout: 500 });
+  }
+
+  function processIdleCandidates(deadline) {
+    idleTimer = 0;
+
+    const started = performance.now();
+    let handled = 0;
+
+    for (const candidate of pendingCandidates) {
+      pendingCandidates.delete(candidate);
+      handled += 1;
+
+      if (!candidate.isConnected || isSkipped(candidate)) {
+        if (shouldYieldIdleBatch(handled, started, deadline)) {
+          break;
+        }
+        continue;
+      }
+
+      const force = candidate.dataset.cgmnForceProcess === "true";
+      delete candidate.dataset.cgmnForceProcess;
+      if (!force && visibilityObserver && !isNearViewport(candidate)) {
+        visibilityObserver.observe(candidate);
+        if (shouldYieldIdleBatch(handled, started, deadline)) {
+          break;
+        }
+        continue;
+      }
+
+      processCandidateNow(candidate, force);
+      if (shouldYieldIdleBatch(handled, started, deadline)) {
+        break;
+      }
+    }
+
+    if (pendingCandidates.size > 0) {
+      scheduleIdleProcessing();
+    }
+  }
+
+  function shouldYieldIdleBatch(handled, started, deadline) {
+    const timedOut =
+      deadline && typeof deadline.timeRemaining === "function"
+        ? deadline.timeRemaining() <= 1
+        : performance.now() - started >= IDLE_BATCH_BUDGET_MS;
+
+    return handled >= IDLE_BATCH_SIZE || timedOut;
+  }
+
+  function processCandidateNow(candidate, force) {
+    const settingsKey = getSettingsKey();
+    if (
+      !force &&
+      candidate.dataset.cgmnProcessed === "true" &&
+      candidate.dataset.cgmnSettingsKey === settingsKey
+    ) {
+      return;
+    }
+
+    if (candidate.matches(".katex")) {
+      processMathWrapper(candidate);
+    } else if (candidate.matches(".katex-display")) {
       processDisplayMath(candidate);
     }
+
+    candidate.dataset.cgmnProcessed = "true";
+    candidate.dataset.cgmnSettingsKey = settingsKey;
   }
 
   function processBox(boxNode) {
@@ -300,32 +432,34 @@
   }
 
   function normalizeTexAnnotations(root) {
-    const annotations = root.querySelectorAll(
+    const annotation = root.querySelector(
       'annotation[encoding="application/x-tex"]'
     );
 
-    for (const annotation of annotations) {
-      const original =
-        annotation.getAttribute("data-cgmn-original-tex") ||
-        annotation.textContent ||
-        "";
-      const normalized = normalizeTexForCopy(original);
-
-      if (normalized === original) {
-        continue;
-      }
-
-      annotation.setAttribute("data-cgmn-original-tex", original);
-      annotation.textContent = normalized;
+    if (!annotation) {
+      return;
     }
+
+    const original =
+      annotation.getAttribute("data-cgmn-original-tex") ||
+      annotation.textContent ||
+      "";
+    const normalized = normalizeTexForCopy(original);
+
+    if (normalized === original) {
+      return;
+    }
+
+    annotation.setAttribute("data-cgmn-original-tex", original);
+    annotation.textContent = normalized;
   }
 
   function restoreTexAnnotations(root) {
-    const annotations = root.querySelectorAll(
+    const annotation = root.querySelector(
       'annotation[encoding="application/x-tex"][data-cgmn-original-tex]'
     );
 
-    for (const annotation of annotations) {
+    if (annotation) {
       annotation.textContent = annotation.getAttribute("data-cgmn-original-tex") || "";
       annotation.removeAttribute("data-cgmn-original-tex");
     }
@@ -345,12 +479,11 @@
     }
 
     const sourceId = ensureUnboxedSourceId(mathNode);
-    const existing = document.querySelector(
-      `[data-cgmn-unboxed-for="${cssEscape(sourceId)}"]`
-    );
+    const existing = unboxedRenderBySource.get(mathNode);
 
     if (
       existing &&
+      existing.isConnected &&
       existing.dataset.cgmnRenderedTex === rawTex &&
       existing.dataset.cgmnNormalizedTex === normalizedTex
     ) {
@@ -381,16 +514,15 @@
     }
 
     mathNode.before(mount);
+    unboxedRenderBySource.set(mathNode, mount);
     mathNode.dataset.cgmnUnboxedOriginal = "true";
   }
 
   function removeUnboxedRender(mathNode) {
-    const sourceId = mathNode.dataset.cgmnUnboxedSourceId;
-    if (sourceId) {
-      const selector = `[data-cgmn-unboxed-for="${cssEscape(sourceId)}"]`;
-      for (const node of document.querySelectorAll(selector)) {
-        node.remove();
-      }
+    const existing = unboxedRenderBySource.get(mathNode);
+    if (existing) {
+      existing.remove();
+      unboxedRenderBySource.delete(mathNode);
     }
 
     delete mathNode.dataset.cgmnUnboxedSourceId;
@@ -429,7 +561,14 @@
     }
 
     const rawTex = readTex(displayNode);
-    const displayPolicy = classifyDisplayMath(rawTex, getDisplayMetrics(displayNode, rawTex));
+    let displayPolicy = classifyDisplayMath(rawTex);
+    if (
+      settings.skipComplexDisplayMath &&
+      !displayPolicy.preserve &&
+      needsDisplayMeasurement(rawTex)
+    ) {
+      displayPolicy = classifyDisplayMath(rawTex, getDisplayMetrics(displayNode, rawTex));
+    }
     const preserveDisplay =
       displayPolicy.reason === "forced-display-construct" ||
       (settings.skipComplexDisplayMath && displayPolicy.preserve);
@@ -488,9 +627,30 @@
     return container ? container.getBoundingClientRect().width : 0;
   }
 
+  function isNearViewport(element) {
+    const rect = element.getBoundingClientRect();
+    const margin = 1000;
+    const viewportHeight =
+      globalThis.innerHeight || document.documentElement.clientHeight || 0;
+    const viewportWidth =
+      globalThis.innerWidth || document.documentElement.clientWidth || 0;
+
+    return (
+      rect.bottom >= -margin &&
+      rect.top <= viewportHeight + margin &&
+      rect.right >= -margin &&
+      rect.left <= viewportWidth + margin
+    );
+  }
+
   function measureInlineFormulaWidth(rawTex) {
     if (!rawTex || !globalThis.katex || typeof globalThis.katex.render !== "function") {
       return 0;
+    }
+
+    const normalizedTex = normalizeTexForCopy(rawTex);
+    if (widthByTex.has(normalizedTex)) {
+      return widthByTex.get(normalizedTex);
     }
 
     const mount = document.createElement("span");
@@ -504,7 +664,7 @@
     ].join(";");
 
     try {
-      globalThis.katex.render(normalizeTexForCopy(rawTex), mount, {
+      globalThis.katex.render(normalizedTex, mount, {
         displayMode: false,
         throwOnError: true,
         strict: "ignore",
@@ -512,7 +672,9 @@
         macros: settings.enabled && settings.removeBoxes ? SIMPLE_INLINE_MACROS : undefined
       });
       document.documentElement.append(mount);
-      return mount.getBoundingClientRect().width;
+      const width = mount.getBoundingClientRect().width;
+      setCachedWidth(normalizedTex, width);
+      return width;
     } catch (_error) {
       return 0;
     } finally {
@@ -530,9 +692,10 @@
       settings.enabled && settings.removeBoxes
         ? normalizeTexForCopy(rawTex)
         : rawTex;
-    const existing = displayNode.querySelector(":scope > [data-cgmn-inline-render]");
+    const existing = inlineRenderByDisplay.get(displayNode);
     if (
       existing &&
+      existing.isConnected &&
       existing.dataset.cgmnRenderedTex === rawTex &&
       existing.dataset.cgmnNormalizedTex === normalizedTex &&
       displayNode.dataset.cgmnRerendered === "true"
@@ -565,17 +728,21 @@
     }
 
     displayNode.prepend(mount);
+    inlineRenderByDisplay.set(displayNode, mount);
     displayNode.dataset.cgmnRerendered = "true";
     applyInlineFlow(displayNode);
   }
 
   function removeInlineRender(displayNode) {
-    const renderedNodes = displayNode.querySelectorAll(
-      ":scope > [data-cgmn-inline-render]"
-    );
+    const existing = inlineRenderByDisplay.get(displayNode);
+    if (existing) {
+      existing.remove();
+      inlineRenderByDisplay.delete(displayNode);
+    }
 
-    for (const node of renderedNodes) {
-      node.remove();
+    const fallback = displayNode.querySelector(":scope > [data-cgmn-inline-render]");
+    if (fallback) {
+      fallback.remove();
     }
 
     delete displayNode.dataset.cgmnRerendered;
@@ -592,6 +759,7 @@
 
     const flowBlock = getMathOnlyFlowBlock(displayNode) || displayNode;
     markFlowElement(flowBlock, ownerId);
+    const flowNodes = [displayNode, flowBlock];
 
     const previousBlock = getPreviousElementSibling(flowBlock);
     const nextBlock = getNextElementSibling(flowBlock);
@@ -599,29 +767,33 @@
     if (isMergeableTextBlock(previousBlock)) {
       markFlowElement(previousBlock, ownerId);
       previousBlock.dataset.cgmnFlowSpaceAfter = "true";
+      flowNodes.push(previousBlock);
     }
 
     if (isMergeableTextBlock(nextBlock)) {
       markFlowElement(nextBlock, ownerId);
+      flowNodes.push(nextBlock);
     }
+
+    inlineFlowNodesByDisplay.set(displayNode, flowNodes);
   }
 
   function clearInlineFlow(displayNode) {
-    const ownerId = displayNode.dataset.cgmnFlowId;
-    if (!ownerId) {
+    const flowNodes = inlineFlowNodesByDisplay.get(displayNode);
+    if (!flowNodes) {
       delete displayNode.dataset.cgmnInlineFlow;
       delete displayNode.dataset.cgmnFlowOwner;
       return;
     }
 
-    const ownerSelector = `[data-cgmn-flow-owner="${cssEscape(ownerId)}"]`;
-    for (const node of document.querySelectorAll(ownerSelector)) {
+    for (const node of flowNodes) {
       delete node.dataset.cgmnInlineFlow;
       delete node.dataset.cgmnInlineFlowBlock;
       delete node.dataset.cgmnFlowOwner;
       delete node.dataset.cgmnFlowSpaceAfter;
     }
 
+    inlineFlowNodesByDisplay.delete(displayNode);
     delete displayNode.dataset.cgmnFlowId;
   }
 
@@ -694,12 +866,13 @@
     );
   }
 
-  function cssEscape(value) {
-    if (globalThis.CSS && typeof globalThis.CSS.escape === "function") {
-      return globalThis.CSS.escape(value);
+  function setCachedWidth(tex, width) {
+    if (widthByTex.size >= WIDTH_CACHE_LIMIT) {
+      const oldestKey = widthByTex.keys().next().value;
+      widthByTex.delete(oldestKey);
     }
 
-    return value.replace(/["\\]/g, "\\$&");
+    widthByTex.set(tex, width);
   }
 
   function isSkipped(element) {
