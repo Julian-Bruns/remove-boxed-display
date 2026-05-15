@@ -4,7 +4,7 @@
   "private": true,
   "description": "Personal cross-browser extension that normalizes ChatGPT KaTeX display math and boxed math.",
   "scripts": {
-    "check": "node --check extension-api.js && node --check tex-normalizer.js && node --check math-display-policy.js && node --check page-clipboard-hook.js && node --check content.js && node --check popup.js && node test/normalize-tex.test.js && node test/display-policy.test.js && node test/extension-api.test.js",
+    "check": "node --check extension-api.js && node --check tex-normalizer.js && node --check math-display-policy.js && node --check page-katex-hook.js && node --check page-clipboard-hook.js && node --check content.js && node --check popup.js && node test/normalize-tex.test.js && node test/display-policy.test.js && node test/page-katex-hook.test.js && node test/extension-api.test.js",
     "vendor:katex": "mkdir -p vendor/katex && cp node_modules/katex/dist/katex.min.js vendor/katex/katex.min.js && cp node_modules/katex/dist/katex.min.css vendor/katex/katex.min.css && rm -rf vendor/katex/fonts && cp -R node_modules/katex/dist/fonts vendor/katex/fonts && cp node_modules/katex/LICENSE vendor/katex/LICENSE"
   },
   "dependencies": {

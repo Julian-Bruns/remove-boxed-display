@@ -63,8 +63,6 @@
   /** @type {MathNormalizerSettings} */
   let settings = { ...DEFAULT_SETTINGS };
   let observer = null;
-  let pendingRoots = new Set();
-  let debounceTimer = 0;
   let nextFlowId = 1;
   const inlineRenderByDisplay = new WeakMap();
   const inlineFlowNodesByDisplay = new WeakMap();
@@ -74,22 +72,27 @@
   init();
 
   function init() {
-    injectClipboardHook();
+    injectPageHooks();
     bindRuntimeMessages();
     bindCopyNormalizer();
+    applyDocumentFlags();
+    startObserverWhenReady();
+    processRoot(document.documentElement, false);
+    bindStorageChanges();
 
     loadSettings().then((loaded) => {
+      const previousSettingsKey = getSettingsKey();
       settings = normalizeSettings(loaded);
       applyDocumentFlags();
-      processRoot(document.body || document.documentElement, false);
-      startObserverWhenReady();
-      bindStorageChanges();
+      processRoot(document.documentElement, getSettingsKey() !== previousSettingsKey);
     });
   }
 
   function startObserverWhenReady() {
-    if (observer || !document.body) {
-      if (!document.body) {
+    const root = document.documentElement;
+
+    if (observer || !root) {
+      if (!root) {
         setTimeout(startObserverWhenReady, 100);
       }
       return;
@@ -102,16 +105,17 @@
         }
 
         for (const node of mutation.addedNodes) {
-          if (node.nodeType === Node.ELEMENT_NODE && nodeContainsCandidate(node)) {
-            pendingRoots.add(node);
+          if (
+            node.nodeType === Node.ELEMENT_NODE &&
+            nodeContainsCandidate(node)
+          ) {
+            processRoot(node, false);
           }
         }
       }
-
-      scheduleProcessing();
     });
 
-    observer.observe(document.body, {
+    observer.observe(root, {
       childList: true,
       subtree: true
     });
@@ -163,22 +167,6 @@
       });
       return false;
     });
-  }
-
-  function scheduleProcessing() {
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
-    }
-
-    debounceTimer = setTimeout(() => {
-      debounceTimer = 0;
-      const roots = pendingRoots;
-      pendingRoots = new Set();
-
-      for (const root of roots) {
-        processRoot(root, false);
-      }
-    }, 120);
   }
 
   async function loadSettings() {
@@ -783,13 +771,22 @@
     );
   }
 
-  function injectClipboardHook() {
+  function injectPageHooks() {
     if (!extensionApi || typeof extensionApi.runtimeGetURL !== "function") {
       return;
     }
 
+    if (!document.documentElement) {
+      setTimeout(injectPageHooks, 0);
+      return;
+    }
+
     injectPageScript("tex-normalizer.js", () => {
-      injectPageScript("page-clipboard-hook.js");
+      injectPageScript("math-display-policy.js", () => {
+        injectPageScript("page-katex-hook.js", () => {
+          injectPageScript("page-clipboard-hook.js");
+        });
+      });
     });
   }
 
@@ -800,6 +797,7 @@
     }
 
     const script = document.createElement("script");
+    script.async = false;
     script.src = url;
     script.onload = () => {
       script.remove();
