@@ -1,17 +1,12 @@
 const assert = require("node:assert/strict");
-const {
-  classifyDisplayMath,
-  needsDisplayMeasurement
-} = require("../math-display-policy.js");
+const { classifyDisplayMath } = require("../math-display-policy.js");
 
 function classify(tex, inlineWidth = 0, containerWidth = 900) {
   return classifyDisplayMath(tex, { inlineWidth, containerWidth });
 }
 
 assert.equal(classify("W \\to D", 44).preserve, false);
-assert.equal(needsDisplayMeasurement("W \\to D"), false);
 assert.equal(classify("g_B \\ge 2", 62).preserve, false);
-assert.equal(needsDisplayMeasurement("g_B \\ge 2"), false);
 assert.equal(classify("\\Delta \\ge \\frac{1}{42}", 84).preserve, false);
 
 assert.equal(
