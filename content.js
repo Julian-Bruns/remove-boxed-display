@@ -43,14 +43,13 @@
     typeof globalThis.cgmnTexNormalizer.normalizeTexForCopy === "function"
       ? globalThis.cgmnTexNormalizer.normalizeTexForCopy
       : (tex) => tex;
+  const extensionApi = globalThis.cgmnExtensionApi;
 
   /** @type {MathNormalizerSettings} */
   let settings = { ...DEFAULT_SETTINGS };
   let observer = null;
   let pendingRoots = new Set();
   let debounceTimer = 0;
-
-  const storage = globalThis.chrome && chrome.storage && chrome.storage.sync;
 
   init();
 
@@ -98,11 +97,11 @@
   }
 
   function bindStorageChanges() {
-    if (!globalThis.chrome || !chrome.storage || !chrome.storage.onChanged) {
+    if (!extensionApi) {
       return;
     }
 
-    chrome.storage.onChanged.addListener((changes, areaName) => {
+    extensionApi.onStorageChanged((changes, areaName) => {
       if (areaName !== "sync") {
         return;
       }
@@ -128,11 +127,11 @@
   }
 
   function bindRuntimeMessages() {
-    if (!globalThis.chrome || !chrome.runtime || !chrome.runtime.onMessage) {
+    if (!extensionApi) {
       return;
     }
 
-    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    extensionApi.onRuntimeMessage((message, _sender, sendResponse) => {
       if (!message || message.type !== "CGMN_STATUS") {
         return false;
       }
@@ -162,19 +161,11 @@
   }
 
   async function loadSettings() {
-    if (!storage) {
+    if (!extensionApi) {
       return DEFAULT_SETTINGS;
     }
 
-    return new Promise((resolve) => {
-      storage.get(DEFAULT_SETTINGS, (items) => {
-        if (chrome.runtime.lastError) {
-          resolve(DEFAULT_SETTINGS);
-          return;
-        }
-        resolve(items);
-      });
-    });
+    return extensionApi.storageGet(DEFAULT_SETTINGS);
   }
 
   function normalizeSettings(value) {
@@ -351,7 +342,13 @@
     const annotation = displayNode.querySelector(
       'annotation[encoding="application/x-tex"]'
     );
-    return annotation ? annotation.textContent.trim() : "";
+    return annotation
+      ? (
+          annotation.getAttribute("data-cgmn-original-tex") ||
+          annotation.textContent ||
+          ""
+        ).trim()
+      : "";
   }
 
   function isComplexFormula(rawTex) {

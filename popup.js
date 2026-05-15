@@ -8,6 +8,7 @@
     skipComplexDisplayMath: false,
     displayMathEnabled: true
   };
+  const extensionApi = globalThis.cgmnExtensionApi;
 
   const controls = {
     enabled: document.getElementById("enabled"),
@@ -25,13 +26,15 @@
   updateTabStatus();
 
   function hydrate() {
-    chrome.storage.sync.get(DEFAULT_SETTINGS, (items) => {
+    if (!extensionApi) {
+      applySettings(DEFAULT_SETTINGS);
+      hydrated = true;
+      return;
+    }
+
+    extensionApi.storageGet(DEFAULT_SETTINGS).then((items) => {
       const settings = normalizeSettings(items);
-      controls.enabled.checked = settings.enabled;
-      controls.removeBoxes.checked = settings.removeBoxes;
-      controls.displayMathMode.value = settings.displayMathMode;
-      controls.skipComplexDisplayMath.checked = settings.skipComplexDisplayMath;
-      controls.displayMathEnabled.checked = settings.displayMathEnabled;
+      applySettings(settings);
       hydrated = true;
     });
   }
@@ -44,18 +47,20 @@
         }
 
         const value = control.type === "checkbox" ? control.checked : control.value;
-        chrome.storage.sync.set({ [key]: value });
+        if (extensionApi) {
+          extensionApi.storageSet({ [key]: value });
+        }
       });
     }
   }
 
   function updateTabStatus() {
-    if (!chrome.tabs || !chrome.tabs.query) {
+    if (!extensionApi) {
       setStatus("Options page", "");
       return;
     }
 
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    extensionApi.tabsQuery({ active: true, currentWindow: true }).then((tabs) => {
       const tabId = tabs[0] && tabs[0].id;
 
       if (!tabId) {
@@ -63,8 +68,8 @@
         return;
       }
 
-      chrome.tabs.sendMessage(tabId, { type: "CGMN_STATUS" }, (response) => {
-        if (chrome.runtime.lastError || !response || !response.supported) {
+      extensionApi.tabsSendMessage(tabId, { type: "CGMN_STATUS" }).then((response) => {
+        if (!response || !response.supported) {
           setStatus("Open ChatGPT to use this extension", "unsupported");
           return;
         }
@@ -74,8 +79,8 @@
     });
   }
 
-  if (chrome.storage && chrome.storage.onChanged) {
-    chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (extensionApi) {
+    extensionApi.onStorageChanged((changes, areaName) => {
       if (areaName !== "sync" || !hydrated) {
         return;
       }
@@ -93,6 +98,14 @@
         }
       }
     });
+  }
+
+  function applySettings(settings) {
+    controls.enabled.checked = settings.enabled;
+    controls.removeBoxes.checked = settings.removeBoxes;
+    controls.displayMathMode.value = settings.displayMathMode;
+    controls.skipComplexDisplayMath.checked = settings.skipComplexDisplayMath;
+    controls.displayMathEnabled.checked = settings.displayMathEnabled;
   }
 
   function setStatus(text, className) {

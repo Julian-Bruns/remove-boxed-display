@@ -3,6 +3,11 @@
   "name": "ChatGPT Math Normalizer",
   "description": "Removes boxed KaTeX styling and converts ChatGPT display math to inline flow.",
   "version": "0.1.0",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "chatgpt-math-normalizer@julian-bruns.local"
+    }
+  },
   "permissions": [
     "storage"
   ],
@@ -25,6 +30,7 @@
         "content.css"
       ],
       "js": [
+        "extension-api.js",
         "vendor/katex/katex.min.js",
         "tex-normalizer.js",
         "content.js"
