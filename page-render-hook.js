@@ -4,6 +4,7 @@
   const STATS_KEY = "__cgmnRenderHookStats";
   const PATCHED_KEY = "__cgmnRenderHookPatched";
   const FORCE_SIMPLE_DISPLAY_INLINE = true;
+  const BOX_MACRO_PATTERN = /\\(?:boxed|fbox|fcolorbox)(?![A-Za-z])/;
   const BOX_MACROS = [
     { name: "\\fcolorbox", args: 3, outputArg: 2 },
     { name: "\\boxed", args: 1, outputArg: 0 },
@@ -106,7 +107,7 @@
       return { tex, options };
     }
 
-    const normalizedTex = normalizeTexForCopy(tex);
+    const normalizedTex = containsBoxMacro(tex) ? normalizeTexForCopy(tex) : tex;
     let nextOptions = options;
 
     if (normalizedTex !== tex) {
@@ -160,6 +161,10 @@
     }
 
     return count;
+  }
+
+  function containsBoxMacro(tex) {
+    return typeof tex === "string" && BOX_MACRO_PATTERN.test(tex);
   }
 
   function normalizeTexForCopy(tex) {

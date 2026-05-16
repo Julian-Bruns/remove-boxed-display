@@ -50,7 +50,7 @@ async function main() {
 
     await page.waitForFunction(
       () =>
-        document.querySelector('[data-case="simple-display"]')?.dataset.cgmnRerendered ===
+        document.querySelector('[data-case="simple-display"]')?.dataset.cgmnInlineFlow ===
         "true",
       null,
       { timeout: 1500 }
@@ -95,7 +95,7 @@ async function main() {
         return (
           bounds.bottom >= 0 &&
           bounds.top <= window.innerHeight &&
-          element.dataset.cgmnRerendered !== "true"
+          element.dataset.cgmnInlineFlow !== "true"
         );
       }).length;
 
@@ -154,7 +154,7 @@ async function main() {
         return (
           bounds.bottom >= 0 &&
           bounds.top <= window.innerHeight &&
-          element.dataset.cgmnRerendered !== "true"
+          element.dataset.cgmnInlineFlow !== "true"
         );
       }).length;
 

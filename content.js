@@ -32,7 +32,11 @@
   const DEFERRED_BATCH_SIZE = 80;
   const DEFERRED_BATCH_TIMEOUT_MS = 250;
   const WIDTH_CACHE_LIMIT = 300;
+  const MEASURE_DISPLAY_WIDTH = false;
+  const RERENDER_SIMPLE_DISPLAY_MATH = false;
   const RERENDER_UNBOXED_MATH = false;
+  const DISPLAY_COMPLEX_HINT_PATTERN =
+    /\\begin\{|\\tag\b|\\\\|\\(?:d?frac|sum|prod|coprod|int|iint|iiint|lim|bigcup|bigcap|left|right|middle|substack|underset|overset|operatorname|quad|qquad)\b/;
   const SKIP_SELECTOR = [
     "pre",
     "code",
@@ -49,6 +53,8 @@
     "\\fbox": "{#1}",
     "\\fcolorbox": "{#3}"
   };
+  const TEX_ANNOTATION_SELECTOR = 'annotation[encoding="application/x-tex"]';
+  const BOX_MACRO_PATTERN = /\\(?:boxed|fbox|fcolorbox)(?![A-Za-z])/;
   const normalizeTexForCopy =
     globalThis.cgmnTexNormalizer &&
     typeof globalThis.cgmnTexNormalizer.normalizeTexForCopy === "function"
@@ -77,6 +83,7 @@
   let nextFlowId = 1;
   const widthByTex = new Map();
   const unboxedRenderByMath = new WeakMap();
+  const inlineRenderByDisplay = new WeakMap();
 
   init();
 
@@ -253,7 +260,7 @@
       return;
     }
 
-    const candidates = collectCandidates(root);
+    const candidates = collectCandidates(root, force);
     const settingsKey = getSettingsKey();
 
     if (!DEFER_OFFSCREEN_PROCESSING) {
@@ -374,41 +381,82 @@
     }
   }
 
-  function collectCandidates(root) {
+  function collectCandidates(root, force) {
     const candidates = [];
+    const seen = new Set();
+    const collectDisplays = settings.enabled && settings.displayMathEnabled;
+    const collectBoxes = settings.enabled && settings.removeBoxes;
 
-    if (root.matches(CANDIDATE_SELECTOR)) {
-      candidates.push(root);
+    if (!settings.enabled && !force) {
+      return candidates;
     }
 
-    candidates.push(...root.querySelectorAll(CANDIDATE_SELECTOR));
+    if ((collectDisplays || force) && root.matches(".katex-display")) {
+      addCandidate(root);
+    } else if (
+      (collectBoxes || force) &&
+      root.matches(".katex") &&
+      root.querySelector(BOX_SELECTOR)
+    ) {
+      addCandidate(root);
+    } else if ((collectBoxes || force) && root.matches(BOX_SELECTOR)) {
+      addBoxedMathCandidate(root);
+    }
+
+    if (collectDisplays || force) {
+      for (const displayNode of root.querySelectorAll(".katex-display")) {
+        addCandidate(displayNode);
+      }
+    }
+
+    if (collectBoxes || force) {
+      for (const boxNode of root.querySelectorAll(BOX_SELECTOR)) {
+        addBoxedMathCandidate(boxNode);
+      }
+    }
+
     return candidates;
+
+    function addBoxedMathCandidate(boxNode) {
+      const mathWrapper = boxNode.closest(".katex");
+      if (mathWrapper) {
+        addCandidate(mathWrapper);
+      }
+    }
+
+    function addCandidate(candidate) {
+      if (seen.has(candidate)) {
+        return;
+      }
+
+      seen.add(candidate);
+      candidates.push(candidate);
+    }
   }
 
   function processCandidate(candidate) {
-    if (candidate.matches(".katex")) {
-      processMathWrapper(candidate);
-    }
-
-    if (candidate.matches(BOX_SELECTOR)) {
-      processBox(candidate);
-    }
-
     if (candidate.matches(".katex-display")) {
       processDisplayMath(candidate);
-    }
-  }
-
-  function processBox(boxNode) {
-    const mathWrapper = boxNode.closest(".katex");
-    if (!mathWrapper) {
       return;
     }
 
-    mathWrapper.dataset.cgmnUnboxed = "true";
+    if (candidate.matches(".katex")) {
+      processBoxedMathWrapper(candidate);
+    }
+  }
+
+  function processBoxedMathWrapper(mathWrapper) {
+    if (settings.enabled && settings.removeBoxes) {
+      mathWrapper.dataset.cgmnUnboxed = "true";
+    } else {
+      delete mathWrapper.dataset.cgmnUnboxed;
+    }
+
     const displayWrapper = mathWrapper.closest(".katex-display");
-    if (displayWrapper) {
+    if (displayWrapper && settings.enabled && settings.removeBoxes) {
       displayWrapper.dataset.cgmnUnboxed = "true";
+    } else if (displayWrapper) {
+      delete displayWrapper.dataset.cgmnUnboxed;
     }
 
     if (displayWrapper && displayWrapper.dataset.cgmnRerendered === "true") {
@@ -440,29 +488,32 @@
   }
 
   function normalizeTexAnnotations(root) {
-    const annotations = root.querySelectorAll(
-      'annotation[encoding="application/x-tex"]'
-    );
-
-    for (const annotation of annotations) {
-      const original =
-        annotation.getAttribute("data-cgmn-original-tex") ||
-        annotation.textContent ||
-        "";
-      const normalized = normalizeTexForCopy(original);
-
-      if (normalized === original) {
-        continue;
-      }
-
-      annotation.setAttribute("data-cgmn-original-tex", original);
-      annotation.textContent = normalized;
+    const annotation = root.querySelector(TEX_ANNOTATION_SELECTOR);
+    if (!annotation) {
+      return;
     }
+
+    const original =
+      annotation.getAttribute("data-cgmn-original-tex") ||
+      annotation.textContent ||
+      "";
+    if (!containsBoxMacro(original)) {
+      return;
+    }
+
+    const normalized = normalizeTexForCopy(original);
+
+    if (normalized === original) {
+      return;
+    }
+
+    annotation.setAttribute("data-cgmn-original-tex", original);
+    annotation.textContent = normalized;
   }
 
   function restoreTexAnnotations(root) {
     const annotations = root.querySelectorAll(
-      'annotation[encoding="application/x-tex"][data-cgmn-original-tex]'
+      `${TEX_ANNOTATION_SELECTOR}[data-cgmn-original-tex]`
     );
 
     for (const annotation of annotations) {
@@ -569,9 +620,7 @@
   }
 
   function readMathTex(mathNode) {
-    const annotation = mathNode.querySelector(
-      'annotation[encoding="application/x-tex"]'
-    );
+    const annotation = mathNode.querySelector(TEX_ANNOTATION_SELECTOR);
 
     return annotation
       ? (
@@ -591,9 +640,12 @@
     }
 
     const rawTex = readTex(displayNode);
-    let displayPolicy = classifyDisplayMath(rawTex);
+    let displayPolicy = isClearlyInlineDisplayTex(rawTex)
+      ? { preserve: false, reason: "quick-inline-worthy" }
+      : classifyDisplayMath(rawTex);
     if (
       settings.skipComplexDisplayMath &&
+      MEASURE_DISPLAY_WIDTH &&
       !displayPolicy.preserve &&
       needsDisplayMeasurement(rawTex)
     ) {
@@ -614,15 +666,21 @@
     delete displayNode.dataset.cgmnComplex;
     delete displayNode.dataset.cgmnDisplayReason;
 
-    if (settings.displayMathMode !== "rerender-simple-inline") {
+    if (!rawTex) {
       removeInlineRender(displayNode);
       clearInlineFlow(displayNode);
       return;
     }
 
-    if (!rawTex) {
+    if (settings.displayMathMode !== "rerender-simple-inline") {
       removeInlineRender(displayNode);
-      clearInlineFlow(displayNode);
+      applyInlineFlow(displayNode);
+      return;
+    }
+
+    if (!RERENDER_SIMPLE_DISPLAY_MATH) {
+      removeInlineRender(displayNode);
+      applyInlineFlow(displayNode);
       return;
     }
 
@@ -630,9 +688,7 @@
   }
 
   function readTex(displayNode) {
-    const annotation = displayNode.querySelector(
-      'annotation[encoding="application/x-tex"]'
-    );
+    const annotation = displayNode.querySelector(TEX_ANNOTATION_SELECTOR);
     return annotation
       ? (
           annotation.getAttribute("data-cgmn-original-tex") ||
@@ -640,6 +696,15 @@
           ""
         ).trim()
       : "";
+  }
+
+  function isClearlyInlineDisplayTex(rawTex) {
+    const tex = typeof rawTex === "string" ? rawTex.trim() : "";
+    return Boolean(
+      tex &&
+        tex.length < 72 &&
+        !DISPLAY_COMPLEX_HINT_PATTERN.test(tex)
+    );
   }
 
   function getDisplayMetrics(displayNode, rawTex) {
@@ -662,10 +727,7 @@
       return 0;
     }
 
-    const normalizedTex =
-      settings.enabled && settings.removeBoxes
-        ? normalizeTexForCopy(rawTex)
-        : rawTex;
+    const normalizedTex = getNormalizedRenderTex(rawTex);
     if (widthByTex.has(normalizedTex)) {
       return widthByTex.get(normalizedTex);
     }
@@ -714,11 +776,8 @@
       return;
     }
 
-    const normalizedTex =
-      settings.enabled && settings.removeBoxes
-        ? normalizeTexForCopy(rawTex)
-        : rawTex;
-    const existing = displayNode.querySelector(":scope > [data-cgmn-inline-render]");
+    const normalizedTex = getNormalizedRenderTex(rawTex);
+    const existing = getInlineRender(displayNode);
     if (
       existing &&
       existing.dataset.cgmnRenderedTex === rawTex &&
@@ -753,20 +812,45 @@
     }
 
     displayNode.prepend(mount);
+    inlineRenderByDisplay.set(displayNode, mount);
     displayNode.dataset.cgmnRerendered = "true";
     applyInlineFlow(displayNode);
   }
 
   function removeInlineRender(displayNode) {
-    const renderedNodes = displayNode.querySelectorAll(
-      ":scope > [data-cgmn-inline-render]"
-    );
-
-    for (const node of renderedNodes) {
-      node.remove();
+    const renderedNode = getInlineRender(displayNode);
+    if (renderedNode) {
+      renderedNode.remove();
+      inlineRenderByDisplay.delete(displayNode);
     }
 
+
     delete displayNode.dataset.cgmnRerendered;
+  }
+
+  function getInlineRender(displayNode) {
+    const existing = inlineRenderByDisplay.get(displayNode);
+    if (existing && existing.isConnected) {
+      return existing;
+    }
+
+    const firstChild = displayNode.firstElementChild;
+    if (firstChild && firstChild.matches("[data-cgmn-inline-render]")) {
+      inlineRenderByDisplay.set(displayNode, firstChild);
+      return firstChild;
+    }
+
+    return null;
+  }
+
+  function getNormalizedRenderTex(rawTex) {
+    return settings.enabled && settings.removeBoxes && containsBoxMacro(rawTex)
+      ? normalizeTexForCopy(rawTex)
+      : rawTex;
+  }
+
+  function containsBoxMacro(tex) {
+    return typeof tex === "string" && BOX_MACRO_PATTERN.test(tex);
   }
 
   function applyInlineFlow(displayNode) {
@@ -875,6 +959,10 @@
     const text = element.textContent.trim();
     if (!text || text.length > 240) {
       return false;
+    }
+
+    if (element.childElementCount === 0) {
+      return true;
     }
 
     return !element.querySelector(

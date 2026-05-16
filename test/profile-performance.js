@@ -32,7 +32,8 @@ const mainScriptNames = new Set([
 
 async function main() {
   fs.mkdirSync(artifactDir, { recursive: true });
-  const server = await startServer(repoRoot);
+  const profileHtml = renderProfilePage(rows);
+  const server = await startServer(repoRoot, profileHtml);
   const browser = await chromium.launch({
     executablePath: findChrome(),
     headless: true,
@@ -78,7 +79,7 @@ async function main() {
         return (
           simpleDisplays.length === expected.simpleDisplays &&
           simpleDisplays.every(
-            (element) => element.dataset.cgmnRerendered === "true"
+            (element) => element.dataset.cgmnInlineFlow === "true"
           ) &&
           boxedParagraphs.length === expected.boxedInline &&
           boxedParagraphs.every(
@@ -108,7 +109,7 @@ async function main() {
 
     const processedState = await page.evaluate(() => ({
       simpleDisplays: document.querySelectorAll(
-        '[data-profile-kind="simple-display"][data-cgmn-rerendered="true"]'
+        '[data-profile-kind="simple-display"][data-cgmn-inline-flow="true"]'
       ).length,
       boxedInline: document.querySelectorAll(
         '[data-profile-kind="boxed-inline"] .katex[data-cgmn-unboxed="true"]'
@@ -429,7 +430,7 @@ function renderReport(summary) {
     "",
     "## Processed DOM",
     "",
-    `- Simple displays re-rendered: ${summary.processedState.simpleDisplays}`,
+    `- Simple displays processed: ${summary.processedState.simpleDisplays}`,
     `- Boxed inline formulas unboxed: ${summary.processedState.boxedInline}`,
     `- Complex displays preserved: ${summary.processedState.complexPreserved}`,
     `- Inline render mounts: ${summary.processedState.inlineRenders}`,
@@ -597,14 +598,13 @@ function displayMath(tex, attributes) {
     .replace('class="katex-display"', `class="katex-display" ${attributes || ""}`);
 }
 
-function startServer(root) {
+function startServer(root, profileHtml) {
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
 
     if (url.pathname === "/profile-page.html") {
-      const requestedRows = readPositiveInteger(url.searchParams.get("rows"), rows);
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      response.end(renderProfilePage(requestedRows));
+      response.end(profileHtml);
       return;
     }
 
