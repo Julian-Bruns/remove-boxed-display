@@ -42,8 +42,10 @@ html[data-cgmn-enabled="true"][data-cgmn-display-inline="true"]
 
 html[data-cgmn-remove-boxes="true"] .katex .fbox,
 html[data-cgmn-remove-boxes="true"] .katex .fcolorbox {
+  background: transparent !important;
   border: 0 !important;
   box-shadow: none !important;
+  padding: 0 !important;
 }
 
 html[data-cgmn-remove-boxes="true"] .katex[data-cgmn-unboxed-original="true"] {
@@ -52,6 +54,5 @@ html[data-cgmn-remove-boxes="true"] .katex[data-cgmn-unboxed-original="true"] {
 
 html[data-cgmn-remove-boxes="true"] .katex[data-cgmn-unboxed="true"] .fbox,
 html[data-cgmn-remove-boxes="true"] .katex[data-cgmn-unboxed="true"] .fcolorbox {
-  padding-left: 0 !important;
-  padding-right: 0 !important;
+  padding: 0 !important;
 }

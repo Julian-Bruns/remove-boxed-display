@@ -83,8 +83,11 @@ async function main() {
           boxedParagraphs.length === expected.boxedInline &&
           boxedParagraphs.every(
             (element) =>
-              element.querySelector('.katex[data-cgmn-unboxed-original="true"]') &&
-              element.querySelector("[data-cgmn-unboxed-render]")
+              element.querySelector('.katex[data-cgmn-unboxed="true"]') &&
+              element
+                .querySelector('annotation[encoding="application/x-tex"]')
+                ?.textContent.trim()
+                .indexOf("\\boxed") === -1
           )
         );
       },
@@ -108,7 +111,7 @@ async function main() {
         '[data-profile-kind="simple-display"][data-cgmn-rerendered="true"]'
       ).length,
       boxedInline: document.querySelectorAll(
-        '[data-profile-kind="boxed-inline"] .katex[data-cgmn-unboxed-original="true"]'
+        '[data-profile-kind="boxed-inline"] .katex[data-cgmn-unboxed="true"]'
       ).length,
       complexPreserved: document.querySelectorAll(
         '[data-profile-kind="complex-display"][data-cgmn-complex="true"]'

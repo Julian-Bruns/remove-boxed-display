@@ -80,12 +80,14 @@ async function main() {
           display: getComputedStyle(element).display
         };
       };
-      const boxedRender = document.querySelector(
-        '[data-case="boxed"] [data-cgmn-unboxed-render]'
+      const boxedMath = document.querySelector(
+        '[data-case="boxed"] .katex[data-cgmn-unboxed="true"]'
       );
-      const boxedAnnotation = boxedRender?.querySelector(
+      const boxedAnnotation = boxedMath?.querySelector(
         'annotation[encoding="application/x-tex"]'
       );
+      const boxedFrame = document.querySelector('[data-case="boxed"] .fbox');
+      const boxedFrameStyle = boxedFrame ? getComputedStyle(boxedFrame) : null;
       const visibleUnrendered = Array.from(
         document.querySelectorAll('[data-case="scroll-display"]')
       ).filter((element) => {
@@ -106,9 +108,10 @@ async function main() {
         complexRerendered: document.querySelector('[data-case="complex-display"]')?.dataset
           .cgmnRerendered,
         boxedAnnotation: boxedAnnotation?.textContent || "",
-        boxedOriginalDisplay: getComputedStyle(
-          document.querySelector('[data-case="boxed"] .katex[data-cgmn-unboxed-original="true"]')
-        ).display,
+        boxedDisplay: boxedMath ? getComputedStyle(boxedMath).display : "",
+        boxedBorderTopWidth: boxedFrameStyle?.borderTopWidth || "",
+        boxedPaddingLeft: boxedFrameStyle?.paddingLeft || "",
+        boxedBackgroundColor: boxedFrameStyle?.backgroundColor || "",
         visibleUnrendered
       };
     });
@@ -117,7 +120,9 @@ async function main() {
     assert.equal(visualState.complexDisplay, "true");
     assert.notEqual(visualState.complexRerendered, "true");
     assert.equal(visualState.boxedAnnotation.trim(), "a+b");
-    assert.equal(visualState.boxedOriginalDisplay, "none");
+    assert.notEqual(visualState.boxedDisplay, "none");
+    assert.equal(visualState.boxedBorderTopWidth, "0px");
+    assert.equal(visualState.boxedPaddingLeft, "0px");
     assert.equal(visualState.visibleUnrendered, 0);
     assert.ok(
       Math.abs(visualState.simpleBefore.centerY - visualState.simpleDisplay.centerY) < 20,

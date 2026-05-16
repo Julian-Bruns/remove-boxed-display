@@ -27,7 +27,12 @@
   const CANDIDATE_SELECTOR = ".katex-display, .fbox, .fcolorbox";
   const BOX_SELECTOR = ".fbox, .fcolorbox";
   const MUTATION_PROCESS_DELAY_MS = 0;
+  const DEFER_OFFSCREEN_PROCESSING = false;
+  const IMMEDIATE_CANDIDATE_LIMIT = 120;
+  const DEFERRED_BATCH_SIZE = 80;
+  const DEFERRED_BATCH_TIMEOUT_MS = 250;
   const WIDTH_CACHE_LIMIT = 300;
+  const RERENDER_UNBOXED_MATH = false;
   const SKIP_SELECTOR = [
     "pre",
     "code",
@@ -65,17 +70,23 @@
   let settings = { ...DEFAULT_SETTINGS };
   let observer = null;
   let pendingRoots = new Set();
+  let deferredCandidates = [];
+  let deferredTimer = 0;
+  let initialBodyProcessed = false;
   let debounceTimer = 0;
   let nextFlowId = 1;
   const widthByTex = new Map();
+  const unboxedRenderByMath = new WeakMap();
 
   init();
 
   function init() {
+    injectRenderHook();
     injectClipboardHook();
     bindRuntimeMessages();
     bindCopyNormalizer();
     applyDocumentFlags();
+    initialBodyProcessed = Boolean(document.body);
     processRoot(document.body || document.documentElement, true);
     startObserverWhenReady();
     bindStorageChanges();
@@ -118,6 +129,11 @@
       childList: true,
       subtree: true
     });
+
+    if (!initialBodyProcessed) {
+      initialBodyProcessed = true;
+      processRoot(document.body, true);
+    }
   }
 
   function bindStorageChanges() {
@@ -240,22 +256,121 @@
     const candidates = collectCandidates(root);
     const settingsKey = getSettingsKey();
 
+    if (!DEFER_OFFSCREEN_PROCESSING) {
+      for (const candidate of candidates) {
+        processCandidateForSettings(candidate, force, settingsKey, false);
+      }
+      return;
+    }
+
+    const immediateCandidates = [];
+    const deferredCandidatesForRoot = [];
+
     for (const candidate of candidates) {
-      if (isSkipped(candidate)) {
+      if (!shouldProcessCandidate(candidate, force, settingsKey)) {
         continue;
+      }
+
+      if (immediateCandidates.length < IMMEDIATE_CANDIDATE_LIMIT) {
+        immediateCandidates.push(candidate);
+      } else {
+        deferredCandidatesForRoot.push(candidate);
+      }
+    }
+
+    for (const candidate of immediateCandidates) {
+      processCandidateForSettings(candidate, force, settingsKey, false);
+    }
+
+    queueDeferredCandidates(deferredCandidatesForRoot, force, settingsKey);
+  }
+
+  function shouldProcessCandidate(candidate, force, settingsKey) {
+    if (!(candidate instanceof Element) || isSkipped(candidate)) {
+      return false;
+    }
+
+    return (
+      force ||
+      candidate.dataset.cgmnProcessed !== "true" ||
+      candidate.dataset.cgmnSettingsKey !== settingsKey
+    );
+  }
+
+  function processCandidateForSettings(
+    candidate,
+    force,
+    settingsKey,
+    checkCurrentSettings
+  ) {
+    if (
+      !candidate.isConnected ||
+      (checkCurrentSettings && getSettingsKey() !== settingsKey) ||
+      !shouldProcessCandidate(candidate, force, settingsKey)
+    ) {
+      return;
+    }
+
+    processCandidate(candidate);
+    candidate.dataset.cgmnProcessed = "true";
+    candidate.dataset.cgmnSettingsKey = settingsKey;
+  }
+
+  function queueDeferredCandidates(candidates, force, settingsKey) {
+    if (!candidates.length) {
+      return;
+    }
+
+    for (const candidate of candidates) {
+      deferredCandidates.push({ candidate, force, settingsKey });
+    }
+
+    scheduleDeferredProcessing();
+  }
+
+  function scheduleDeferredProcessing() {
+    if (deferredTimer) {
+      return;
+    }
+
+    const callback = (deadline) => {
+      deferredTimer = 0;
+      processDeferredCandidates(deadline);
+    };
+
+    if (typeof globalThis.requestIdleCallback === "function") {
+      deferredTimer = globalThis.requestIdleCallback(callback, {
+        timeout: DEFERRED_BATCH_TIMEOUT_MS
+      });
+      return;
+    }
+
+    deferredTimer = setTimeout(() => callback(null), 0);
+  }
+
+  function processDeferredCandidates(deadline) {
+    let processed = 0;
+
+    while (deferredCandidates.length) {
+      const item = deferredCandidates.shift();
+      processCandidateForSettings(item.candidate, item.force, item.settingsKey, true);
+      processed += 1;
+
+      if (processed >= DEFERRED_BATCH_SIZE) {
+        break;
       }
 
       if (
-        !force &&
-        candidate.dataset.cgmnProcessed === "true" &&
-        candidate.dataset.cgmnSettingsKey === settingsKey
+        deadline &&
+        typeof deadline.timeRemaining === "function" &&
+        deadline.timeRemaining() <= 2
       ) {
-        continue;
+        break;
       }
+    }
 
-      processCandidate(candidate);
-      candidate.dataset.cgmnProcessed = "true";
-      candidate.dataset.cgmnSettingsKey = settingsKey;
+    if (deferredCandidates.length) {
+      scheduleDeferredProcessing();
     }
   }
 
@@ -314,7 +429,13 @@
       return;
     }
 
-    renderUnboxedMath(mathNode);
+    if (RERENDER_UNBOXED_MATH) {
+      renderUnboxedMath(mathNode);
+    } else {
+      removeUnboxedRender(mathNode, true);
+      delete mathNode.dataset.cgmnUnboxedOriginal;
+    }
+
     normalizeTexAnnotations(mathNode);
   }
 
@@ -364,12 +485,11 @@
     }
 
     const sourceId = ensureUnboxedSourceId(mathNode);
-    const existing = document.querySelector(
-      `[data-cgmn-unboxed-for="${cssEscape(sourceId)}"]`
-    );
+    const existing = getUnboxedRender(mathNode);
 
     if (
       existing &&
+      existing.isConnected &&
       existing.dataset.cgmnRenderedTex === rawTex &&
       existing.dataset.cgmnNormalizedTex === normalizedTex
     ) {
@@ -377,7 +497,7 @@
       return;
     }
 
-    removeUnboxedRender(mathNode);
+    removeUnboxedRender(mathNode, true);
 
     const mount = document.createElement("span");
     mount.dataset.cgmnUnboxedRender = "true";
@@ -400,19 +520,42 @@
     }
 
     mathNode.before(mount);
+    unboxedRenderByMath.set(mathNode, mount);
     mathNode.dataset.cgmnUnboxedOriginal = "true";
   }
 
-  function removeUnboxedRender(mathNode) {
-    const sourceId = mathNode.dataset.cgmnUnboxedSourceId;
-    if (sourceId) {
-      const selector = `[data-cgmn-unboxed-for="${cssEscape(sourceId)}"]`;
-      for (const node of document.querySelectorAll(selector)) {
-        node.remove();
-      }
+  function getUnboxedRender(mathNode) {
+    const existing = unboxedRenderByMath.get(mathNode);
+    if (existing && existing.isConnected) {
+      return existing;
     }
 
-    delete mathNode.dataset.cgmnUnboxedSourceId;
+    const sourceId = mathNode.dataset.cgmnUnboxedSourceId;
+    const previous = mathNode.previousElementSibling;
+    if (
+      sourceId &&
+      previous &&
+      previous.matches("[data-cgmn-unboxed-render]") &&
+      previous.dataset.cgmnUnboxedFor === sourceId
+    ) {
+      unboxedRenderByMath.set(mathNode, previous);
+      return previous;
+    }
+
+    return null;
+  }
+
+  function removeUnboxedRender(mathNode, preserveSourceId) {
+    const sourceId = mathNode.dataset.cgmnUnboxedSourceId;
+    const existing = getUnboxedRender(mathNode);
+    if (existing) {
+      existing.remove();
+      unboxedRenderByMath.delete(mathNode);
+    }
+
+    if (!preserveSourceId || !sourceId) {
+      delete mathNode.dataset.cgmnUnboxedSourceId;
+    }
     delete mathNode.dataset.cgmnUnboxedOriginal;
   }
 
@@ -793,9 +936,22 @@
     });
   }
 
+  function injectRenderHook() {
+    if (!extensionApi || typeof extensionApi.runtimeGetURL !== "function") {
+      return;
+    }
+
+    injectPageScript("page-render-hook.js");
+  }
+
   function injectPageScript(path, onLoad) {
     const url = extensionApi.runtimeGetURL(path);
-    if (!url || !document.documentElement) {
+    if (!url) {
+      return;
+    }
+
+    if (!document.documentElement) {
+      setTimeout(() => injectPageScript(path, onLoad), 0);
       return;
     }
 
