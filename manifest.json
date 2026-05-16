@@ -36,7 +36,7 @@
         "math-display-policy.js",
         "content.js"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_end"
     }
   ],
   "web_accessible_resources": [

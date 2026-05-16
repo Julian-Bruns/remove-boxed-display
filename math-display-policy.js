@@ -28,12 +28,7 @@
       };
     }
 
-    const relationCount = countMatches(tex, RELATION_PATTERN);
-    const hasDisplayStructure = DISPLAY_STRUCTURE_PATTERN.test(tex);
-    const hasLargeObject = LARGE_OBJECT_PATTERN.test(tex);
-    const hasSetBuilder =
-      /(\\left\s*\{|\\\{|\{)/.test(tex) &&
-      /(\\mid\b|\\;?:|\\colon\b|\\text\{[^}]*\b(?:for|such|where|with|all|some)\b[^}]*\})/.test(tex);
+    const traits = getDisplayTraits(tex);
     const inlineWidth = Number(safeMetrics.inlineWidth) || 0;
     const containerWidth = Number(safeMetrics.containerWidth) || 0;
     const widthRatio =
@@ -42,17 +37,17 @@
     const isVeryLong = tex.length >= 130 || inlineWidth >= 520 || widthRatio >= 0.62;
     const isTooWide = inlineWidth > 0 && containerWidth > 0 && widthRatio >= 0.5;
     const isStructured =
-      hasSetBuilder ||
-      hasDisplayStructure ||
-      (hasLargeObject && tex.length >= 48) ||
-      relationCount >= 2;
+      traits.hasSetBuilder ||
+      traits.hasDisplayStructure ||
+      (traits.hasLargeObject && tex.length >= 48) ||
+      traits.relationCount >= 2;
 
     if ((isLong && isStructured && isTooWide) || (isVeryLong && isStructured)) {
       return {
         preserve: true,
-        reason: hasSetBuilder
+        reason: traits.hasSetBuilder
           ? "set-builder-or-definition"
-          : hasLargeObject
+          : traits.hasLargeObject
             ? "large-object"
             : "long-structured-formula"
       };
@@ -64,8 +59,36 @@
     };
   }
 
+  function needsDisplayMeasurement(rawTex) {
+    const tex = typeof rawTex === "string" ? rawTex.trim() : "";
+
+    if (!tex || isForcedDisplayTex(tex)) {
+      return false;
+    }
+
+    const traits = getDisplayTraits(tex);
+    return (
+      tex.length >= 72 ||
+      traits.hasSetBuilder ||
+      traits.hasDisplayStructure ||
+      traits.hasLargeObject ||
+      traits.relationCount >= 2
+    );
+  }
+
   function isForcedDisplayTex(tex) {
     return FORCED_DISPLAY_PATTERN.test(tex) || /\\tag\b/.test(tex) || /\\\\/.test(tex);
+  }
+
+  function getDisplayTraits(tex) {
+    return {
+      relationCount: countMatches(tex, RELATION_PATTERN),
+      hasDisplayStructure: DISPLAY_STRUCTURE_PATTERN.test(tex),
+      hasLargeObject: LARGE_OBJECT_PATTERN.test(tex),
+      hasSetBuilder:
+        /(\\left\s*\{|\\\{|\{)/.test(tex) &&
+        /(\\mid\b|\\;?:|\\colon\b|\\text\{[^}]*\b(?:for|such|where|with|all|some)\b[^}]*\})/.test(tex)
+    };
   }
 
   function countMatches(text, pattern) {
@@ -82,7 +105,8 @@
 
   const api = {
     classifyDisplayMath,
-    isForcedDisplayTex
+    isForcedDisplayTex,
+    needsDisplayMeasurement
   };
 
   if (typeof module !== "undefined" && module.exports) {

@@ -24,11 +24,10 @@
     displayMathEnabled: true
   };
 
-  const CANDIDATE_SELECTOR = ".katex, .katex-display, .fbox, .fcolorbox";
+  const CANDIDATE_SELECTOR = ".katex-display, .fbox, .fcolorbox";
   const BOX_SELECTOR = ".fbox, .fcolorbox";
-  const PROCESSING_DEBOUNCE_MS = 120;
-  // Keep each extension processing slice well below the 50ms long-task threshold.
-  const PROCESSING_TASK_BUDGET_MS = 12;
+  const MUTATION_PROCESS_DELAY_MS = 0;
+  const WIDTH_CACHE_LIMIT = 300;
   const SKIP_SELECTOR = [
     "pre",
     "code",
@@ -56,17 +55,19 @@
     typeof globalThis.cgmnDisplayPolicy.classifyDisplayMath === "function"
       ? globalThis.cgmnDisplayPolicy.classifyDisplayMath
       : () => ({ preserve: false, reason: "policy-unavailable" });
+  const needsDisplayMeasurement =
+    globalThis.cgmnDisplayPolicy &&
+    typeof globalThis.cgmnDisplayPolicy.needsDisplayMeasurement === "function"
+      ? globalThis.cgmnDisplayPolicy.needsDisplayMeasurement
+      : () => true;
 
   /** @type {MathNormalizerSettings} */
   let settings = { ...DEFAULT_SETTINGS };
   let observer = null;
   let pendingRoots = new Set();
   let debounceTimer = 0;
-  let processingTimer = 0;
-  let processingQueue = [];
-  let processingIndex = 0;
-  const queuedCandidateForces = new Map();
   let nextFlowId = 1;
+  const widthByTex = new Map();
 
   init();
 
@@ -74,13 +75,18 @@
     injectClipboardHook();
     bindRuntimeMessages();
     bindCopyNormalizer();
+    applyDocumentFlags();
+    processRoot(document.body || document.documentElement, true);
+    startObserverWhenReady();
+    bindStorageChanges();
 
     loadSettings().then((loaded) => {
+      const previousSettingsKey = getSettingsKey();
       settings = normalizeSettings(loaded);
       applyDocumentFlags();
-      processRoot(document.body || document.documentElement, true);
-      startObserverWhenReady();
-      bindStorageChanges();
+      if (getSettingsKey() !== previousSettingsKey) {
+        processRoot(document.body || document.documentElement, true);
+      }
     });
   }
 
@@ -173,11 +179,9 @@
       pendingRoots = new Set();
 
       for (const root of roots) {
-        queueRoot(root, false);
+        processRoot(root, false);
       }
-
-      scheduleCandidateProcessing();
-    }, PROCESSING_DEBOUNCE_MS);
+    }, MUTATION_PROCESS_DELAY_MS);
   }
 
   async function loadSettings() {
@@ -234,119 +238,25 @@
     }
 
     const candidates = collectCandidates(root);
-    if (candidates.length === 0) {
-      return;
-    }
-
-    if (processingQueue.length === 0) {
-      const settingsKey = getSettingsKey();
-      const processedCount = processCandidateBatch(
-        candidates,
-        force,
-        settingsKey,
-        PROCESSING_TASK_BUDGET_MS
-      );
-
-      if (processedCount >= candidates.length) {
-        return;
-      }
-
-      queueCandidates(candidates.slice(processedCount), force);
-      scheduleCandidateProcessing();
-      return;
-    }
-
-    queueCandidates(candidates, force);
-    scheduleCandidateProcessing();
-  }
-
-  function queueRoot(root, force) {
-    if (!(root instanceof Element)) {
-      return;
-    }
-
-    queueCandidates(collectCandidates(root), force);
-  }
-
-  function queueCandidates(candidates, force) {
-    for (const candidate of candidates) {
-      if (!queuedCandidateForces.has(candidate)) {
-        processingQueue.push(candidate);
-        queuedCandidateForces.set(candidate, force);
-      } else if (force) {
-        queuedCandidateForces.set(candidate, true);
-      }
-    }
-  }
-
-  function scheduleCandidateProcessing() {
-    if (processingTimer || processingIndex >= processingQueue.length) {
-      return;
-    }
-
-    processingTimer = setTimeout(drainProcessingQueue, 0);
-  }
-
-  function drainProcessingQueue() {
-    processingTimer = 0;
-    const startedAt = performance.now();
     const settingsKey = getSettingsKey();
 
-    while (processingIndex < processingQueue.length) {
-      if (performance.now() - startedAt >= PROCESSING_TASK_BUDGET_MS) {
-        break;
+    for (const candidate of candidates) {
+      if (isSkipped(candidate)) {
+        continue;
       }
 
-      const candidate = processingQueue[processingIndex];
-      processingIndex += 1;
-
-      const force = queuedCandidateForces.get(candidate) === true;
-      queuedCandidateForces.delete(candidate);
-      processCandidateIfNeeded(candidate, force, settingsKey);
-    }
-
-    if (processingIndex >= processingQueue.length) {
-      processingQueue = [];
-      processingIndex = 0;
-      queuedCandidateForces.clear();
-      return;
-    }
-
-    scheduleCandidateProcessing();
-  }
-
-  function processCandidateBatch(candidates, force, settingsKey, budgetMs) {
-    const startedAt = performance.now();
-    let index = 0;
-
-    while (index < candidates.length) {
-      if (index > 0 && performance.now() - startedAt >= budgetMs) {
-        break;
+      if (
+        !force &&
+        candidate.dataset.cgmnProcessed === "true" &&
+        candidate.dataset.cgmnSettingsKey === settingsKey
+      ) {
+        continue;
       }
 
-      processCandidateIfNeeded(candidates[index], force, settingsKey);
-      index += 1;
+      processCandidate(candidate);
+      candidate.dataset.cgmnProcessed = "true";
+      candidate.dataset.cgmnSettingsKey = settingsKey;
     }
-
-    return index;
-  }
-
-  function processCandidateIfNeeded(candidate, force, settingsKey) {
-    if (!(candidate instanceof Element) || !candidate.isConnected || isSkipped(candidate)) {
-      return;
-    }
-
-    if (
-      !force &&
-      candidate.dataset.cgmnProcessed === "true" &&
-      candidate.dataset.cgmnSettingsKey === settingsKey
-    ) {
-      return;
-    }
-
-    processCandidate(candidate);
-    candidate.dataset.cgmnProcessed = "true";
-    candidate.dataset.cgmnSettingsKey = settingsKey;
   }
 
   function collectCandidates(root) {
@@ -385,6 +295,12 @@
     if (displayWrapper) {
       displayWrapper.dataset.cgmnUnboxed = "true";
     }
+
+    if (displayWrapper && displayWrapper.dataset.cgmnRerendered === "true") {
+      return;
+    }
+
+    processMathWrapper(mathWrapper);
   }
 
   function processMathWrapper(mathNode) {
@@ -532,7 +448,14 @@
     }
 
     const rawTex = readTex(displayNode);
-    const displayPolicy = classifyDisplayMath(rawTex, getDisplayMetrics(displayNode, rawTex));
+    let displayPolicy = classifyDisplayMath(rawTex);
+    if (
+      settings.skipComplexDisplayMath &&
+      !displayPolicy.preserve &&
+      needsDisplayMeasurement(rawTex)
+    ) {
+      displayPolicy = classifyDisplayMath(rawTex, getDisplayMetrics(displayNode, rawTex));
+    }
     const preserveDisplay =
       displayPolicy.reason === "forced-display-construct" ||
       (settings.skipComplexDisplayMath && displayPolicy.preserve);
@@ -596,6 +519,14 @@
       return 0;
     }
 
+    const normalizedTex =
+      settings.enabled && settings.removeBoxes
+        ? normalizeTexForCopy(rawTex)
+        : rawTex;
+    if (widthByTex.has(normalizedTex)) {
+      return widthByTex.get(normalizedTex);
+    }
+
     const mount = document.createElement("span");
     mount.style.cssText = [
       "position:absolute",
@@ -607,7 +538,7 @@
     ].join(";");
 
     try {
-      globalThis.katex.render(normalizeTexForCopy(rawTex), mount, {
+      globalThis.katex.render(normalizedTex, mount, {
         displayMode: false,
         throwOnError: true,
         strict: "ignore",
@@ -615,12 +546,23 @@
         macros: settings.enabled && settings.removeBoxes ? SIMPLE_INLINE_MACROS : undefined
       });
       document.documentElement.append(mount);
-      return mount.getBoundingClientRect().width;
+      const width = mount.getBoundingClientRect().width;
+      setCachedWidth(normalizedTex, width);
+      return width;
     } catch (_error) {
       return 0;
     } finally {
       mount.remove();
     }
+  }
+
+  function setCachedWidth(tex, width) {
+    if (widthByTex.size >= WIDTH_CACHE_LIMIT) {
+      const oldestKey = widthByTex.keys().next().value;
+      widthByTex.delete(oldestKey);
+    }
+
+    widthByTex.set(tex, width);
   }
 
   function renderSimpleInline(displayNode, rawTex) {
