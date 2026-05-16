@@ -26,6 +26,9 @@
 
   const CANDIDATE_SELECTOR = ".katex, .katex-display, .fbox, .fcolorbox";
   const BOX_SELECTOR = ".fbox, .fcolorbox";
+  const PROCESSING_DEBOUNCE_MS = 120;
+  // Keep each extension processing slice well below the 50ms long-task threshold.
+  const PROCESSING_TASK_BUDGET_MS = 12;
   const SKIP_SELECTOR = [
     "pre",
     "code",
@@ -59,6 +62,10 @@
   let observer = null;
   let pendingRoots = new Set();
   let debounceTimer = 0;
+  let processingTimer = 0;
+  let processingQueue = [];
+  let processingIndex = 0;
+  const queuedCandidateForces = new Map();
   let nextFlowId = 1;
 
   init();
@@ -166,9 +173,11 @@
       pendingRoots = new Set();
 
       for (const root of roots) {
-        processRoot(root, false);
+        queueRoot(root, false);
       }
-    }, 120);
+
+      scheduleCandidateProcessing();
+    }, PROCESSING_DEBOUNCE_MS);
   }
 
   async function loadSettings() {
@@ -225,25 +234,119 @@
     }
 
     const candidates = collectCandidates(root);
+    if (candidates.length === 0) {
+      return;
+    }
+
+    if (processingQueue.length === 0) {
+      const settingsKey = getSettingsKey();
+      const processedCount = processCandidateBatch(
+        candidates,
+        force,
+        settingsKey,
+        PROCESSING_TASK_BUDGET_MS
+      );
+
+      if (processedCount >= candidates.length) {
+        return;
+      }
+
+      queueCandidates(candidates.slice(processedCount), force);
+      scheduleCandidateProcessing();
+      return;
+    }
+
+    queueCandidates(candidates, force);
+    scheduleCandidateProcessing();
+  }
+
+  function queueRoot(root, force) {
+    if (!(root instanceof Element)) {
+      return;
+    }
+
+    queueCandidates(collectCandidates(root), force);
+  }
+
+  function queueCandidates(candidates, force) {
+    for (const candidate of candidates) {
+      if (!queuedCandidateForces.has(candidate)) {
+        processingQueue.push(candidate);
+        queuedCandidateForces.set(candidate, force);
+      } else if (force) {
+        queuedCandidateForces.set(candidate, true);
+      }
+    }
+  }
+
+  function scheduleCandidateProcessing() {
+    if (processingTimer || processingIndex >= processingQueue.length) {
+      return;
+    }
+
+    processingTimer = setTimeout(drainProcessingQueue, 0);
+  }
+
+  function drainProcessingQueue() {
+    processingTimer = 0;
+    const startedAt = performance.now();
     const settingsKey = getSettingsKey();
 
-    for (const candidate of candidates) {
-      if (isSkipped(candidate)) {
-        continue;
+    while (processingIndex < processingQueue.length) {
+      if (performance.now() - startedAt >= PROCESSING_TASK_BUDGET_MS) {
+        break;
       }
 
-      if (
-        !force &&
-        candidate.dataset.cgmnProcessed === "true" &&
-        candidate.dataset.cgmnSettingsKey === settingsKey
-      ) {
-        continue;
-      }
+      const candidate = processingQueue[processingIndex];
+      processingIndex += 1;
 
-      processCandidate(candidate);
-      candidate.dataset.cgmnProcessed = "true";
-      candidate.dataset.cgmnSettingsKey = settingsKey;
+      const force = queuedCandidateForces.get(candidate) === true;
+      queuedCandidateForces.delete(candidate);
+      processCandidateIfNeeded(candidate, force, settingsKey);
     }
+
+    if (processingIndex >= processingQueue.length) {
+      processingQueue = [];
+      processingIndex = 0;
+      queuedCandidateForces.clear();
+      return;
+    }
+
+    scheduleCandidateProcessing();
+  }
+
+  function processCandidateBatch(candidates, force, settingsKey, budgetMs) {
+    const startedAt = performance.now();
+    let index = 0;
+
+    while (index < candidates.length) {
+      if (index > 0 && performance.now() - startedAt >= budgetMs) {
+        break;
+      }
+
+      processCandidateIfNeeded(candidates[index], force, settingsKey);
+      index += 1;
+    }
+
+    return index;
+  }
+
+  function processCandidateIfNeeded(candidate, force, settingsKey) {
+    if (!(candidate instanceof Element) || !candidate.isConnected || isSkipped(candidate)) {
+      return;
+    }
+
+    if (
+      !force &&
+      candidate.dataset.cgmnProcessed === "true" &&
+      candidate.dataset.cgmnSettingsKey === settingsKey
+    ) {
+      return;
+    }
+
+    processCandidate(candidate);
+    candidate.dataset.cgmnProcessed = "true";
+    candidate.dataset.cgmnSettingsKey = settingsKey;
   }
 
   function collectCandidates(root) {
