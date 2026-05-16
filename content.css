@@ -1,15 +1,15 @@
 html[data-cgmn-enabled="true"][data-cgmn-display-inline="true"]
-  .katex-display:not([data-cgmn-complex="true"]) {
+  .katex-display[data-cgmn-inline-flow="true"]:not([data-cgmn-complex="true"]) {
   display: inline !important;
   margin: 0 0.12em !important;
   text-align: inherit !important;
 }
 
 html[data-cgmn-enabled="true"][data-cgmn-display-inline="true"]
-  .katex-display:not([data-cgmn-complex="true"])
+  .katex-display[data-cgmn-inline-flow="true"]:not([data-cgmn-complex="true"])
   > .katex,
 html[data-cgmn-enabled="true"][data-cgmn-display-inline="true"]
-  .katex-display:not([data-cgmn-complex="true"])
+  .katex-display[data-cgmn-inline-flow="true"]:not([data-cgmn-complex="true"])
   > [data-cgmn-inline-render]
   > .katex {
   display: inline !important;
@@ -17,13 +17,13 @@ html[data-cgmn-enabled="true"][data-cgmn-display-inline="true"]
 }
 
 html[data-cgmn-enabled="true"][data-cgmn-display-inline="true"]
-  .katex-display:not([data-cgmn-complex="true"])
+  .katex-display[data-cgmn-inline-flow="true"]:not([data-cgmn-complex="true"])
   .katex-html {
   display: inline !important;
 }
 
 html[data-cgmn-enabled="true"][data-cgmn-display-inline="true"]
-  .katex-display[data-cgmn-rerendered="true"]:not([data-cgmn-complex="true"])
+  .katex-display[data-cgmn-inline-flow="true"][data-cgmn-rerendered="true"]:not([data-cgmn-complex="true"])
   > :not([data-cgmn-inline-render]) {
   display: none !important;
 }

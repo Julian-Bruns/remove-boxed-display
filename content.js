@@ -26,7 +26,6 @@
 
   const CANDIDATE_SELECTOR = ".katex-display, .fbox, .fcolorbox";
   const BOX_SELECTOR = ".fbox, .fcolorbox";
-  const MUTATION_PROCESS_DELAY_MS = 0;
   const DEFER_OFFSCREEN_PROCESSING = false;
   const IMMEDIATE_CANDIDATE_LIMIT = 120;
   const DEFERRED_BATCH_SIZE = 80;
@@ -79,7 +78,7 @@
   let deferredCandidates = [];
   let deferredTimer = 0;
   let initialBodyProcessed = false;
-  let debounceTimer = 0;
+  let processingScheduled = false;
   let nextFlowId = 1;
   const widthByTex = new Map();
   const unboxedRenderByMath = new WeakMap();
@@ -109,10 +108,13 @@
   }
 
   function startObserverWhenReady() {
-    if (observer || !document.body) {
-      if (!document.body) {
-        setTimeout(startObserverWhenReady, 100);
-      }
+    if (observer) {
+      return;
+    }
+
+    const observeRoot = document.body || document.documentElement;
+    if (!observeRoot) {
+      setTimeout(startObserverWhenReady, 10);
       return;
     }
 
@@ -132,12 +134,12 @@
       scheduleProcessing();
     });
 
-    observer.observe(document.body, {
+    observer.observe(observeRoot, {
       childList: true,
       subtree: true
     });
 
-    if (!initialBodyProcessed) {
+    if (!initialBodyProcessed && document.body) {
       initialBodyProcessed = true;
       processRoot(document.body, true);
     }
@@ -192,19 +194,28 @@
   }
 
   function scheduleProcessing() {
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
+    if (processingScheduled) {
+      return;
     }
 
-    debounceTimer = setTimeout(() => {
-      debounceTimer = 0;
-      const roots = pendingRoots;
-      pendingRoots = new Set();
+    processingScheduled = true;
 
-      for (const root of roots) {
-        processRoot(root, false);
-      }
-    }, MUTATION_PROCESS_DELAY_MS);
+    if (typeof globalThis.queueMicrotask === "function") {
+      globalThis.queueMicrotask(processPendingRoots);
+      return;
+    }
+
+    Promise.resolve().then(processPendingRoots);
+  }
+
+  function processPendingRoots() {
+    processingScheduled = false;
+    const roots = pendingRoots;
+    pendingRoots = new Set();
+
+    for (const root of roots) {
+      processRoot(root, false);
+    }
   }
 
   async function loadSettings() {

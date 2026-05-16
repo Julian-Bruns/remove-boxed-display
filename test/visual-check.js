@@ -133,6 +133,53 @@ async function main() {
       "simple display math should share the following text line"
     );
 
+    const lazyMutationState = await page.evaluate(async () => {
+      const conversation = document.getElementById("conversation");
+      const complexTex =
+        "\\operatorname{MonSupp}^{\\circ}_{\\ell}(C)=\\left\\{[H] : H=\\overline{\\rho(\\pi_1(C'))}^{\\mathrm{Zar},\\circ}\\text{ for some finite etale }C'\\to C\\right\\}";
+      const displayMath = (tex, attributes) =>
+        katex
+          .renderToString(tex, {
+            displayMode: true,
+            throwOnError: true,
+            strict: "ignore",
+            trust: false
+          })
+          .replace(
+            'class="katex-display"',
+            `class="katex-display" ${attributes || ""}`
+          );
+
+      conversation.insertAdjacentHTML(
+        "beforeend",
+        `
+          <article data-message-author-role="assistant" data-case="lazy-mutation">
+            <p>Lazy inserted simple display:</p>
+            ${displayMath("z \\to w", 'data-case="lazy-simple-display"')}
+            <p>Lazy inserted complex display:</p>
+            ${displayMath(complexTex, 'data-case="lazy-complex-display"')}
+          </article>
+        `
+      );
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const simple = document.querySelector('[data-case="lazy-simple-display"]');
+      const complex = document.querySelector('[data-case="lazy-complex-display"]');
+      return {
+        simpleInlineFlow: simple?.dataset.cgmnInlineFlow,
+        simpleDisplay: simple ? getComputedStyle(simple).display : "",
+        complexMarked: complex?.dataset.cgmnComplex,
+        complexDisplay: complex ? getComputedStyle(complex).display : ""
+      };
+    });
+
+    assert.equal(lazyMutationState.simpleInlineFlow, "true");
+    assert.equal(lazyMutationState.simpleDisplay, "inline");
+    assert.equal(lazyMutationState.complexMarked, "true");
+    assert.notEqual(lazyMutationState.complexDisplay, "inline");
+
     const scrollMetrics = await page.evaluate(async () => {
       const gaps = [];
       const scrollRoot = document.scrollingElement || document.documentElement;
